@@ -82,8 +82,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 .ctrls .chap svg{width:26px;height:26px;fill:currentColor}
 .ctrls .play{width:84px;height:84px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center}
 .ctrls .play svg{width:38px;height:38px;fill:currentColor}
-.tools{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
-.tool{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px;border-radius:14px;font-size:12px;color:var(--muted)}
+.tools{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:6px}
+.tool{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 2px;border-radius:14px;font-size:11.5px;color:var(--muted);min-width:0}
 .tool b{font-size:16px;color:var(--text);font-weight:600;min-height:24px;display:flex;align-items:center}
 .tool svg{width:24px;height:24px;fill:none;stroke:var(--text);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .tool:active{background:var(--surface2)}
@@ -107,6 +107,19 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 .hint{color:var(--muted);font-size:13px;padding:6px 14px 12px;line-height:1.45}
 .primary{display:block;width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radius:14px;background:var(--accent);color:var(--accent-ink);font-weight:700;text-align:center}
 input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+.pill{display:flex;align-items:center;gap:8px;margin:12px auto 0;padding:9px 16px;border-radius:999px;background:var(--surface2);border:1px solid var(--line);color:var(--accent);font-size:14px;font-weight:600}
+.pill svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.recap{margin:4px 10px 12px;padding:16px;border-radius:16px;background:var(--surface2);line-height:1.5;font-size:15.5px}
+.recap .lead{font-family:var(--serif);font-size:17px;margin:0 0 10px}
+.recap ul{margin:0 0 12px;padding-left:20px}
+.recap li{margin:4px 0}
+.recap .last{border-left:3px solid var(--accent);padding:2px 0 2px 12px;margin:0}
+.recap .last b{display:block;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--accent);margin-bottom:2px}
+.recap .meta{color:var(--muted);font-size:12.5px;margin:12px 0 0}
+.hint a{color:var(--accent)}
+.busy{display:flex;align-items:center;gap:12px;padding:18px 14px;color:var(--muted)}
+.busy i{width:20px;height:20px;border:3px solid var(--surface2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
 #toast{position:fixed;left:50%;bottom:calc(100px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:var(--bg);padding:12px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:90vw;text-align:center}
 </style>
 </head>
@@ -139,7 +152,8 @@ input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radi
   </div>
   <div class="p-body">
     <div id="bigcover"></div>
-    <div class="p-title"><div id="pChapter"></div><div id="pBook"></div></div>
+    <div class="p-title"><div id="pChapter"></div><div id="pBook"></div>
+      <button class="pill hidden" id="awayPill"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg><span id="awayTxt"></span></button></div>
     <div class="seek">
       <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Posición en el capítulo">
       <div class="times"><span id="tCur">0:00</span><span id="tLeft">-0:00</span></div>
@@ -157,6 +171,7 @@ input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radi
       <button class="tool" id="sleepBtn"><b id="sleepLbl"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg></b>Dormir</button>
       <button class="tool" id="chapBtn"><b><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></b>Capítulos</button>
       <button class="tool" id="markBtn"><b><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg></b>Marcadores</button>
+      <button class="tool" id="recapBtn"><b><svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></b>Resumen</button>
     </div>
   </div>
 </section>
@@ -230,22 +245,26 @@ function walk(dv, start, end, cb) {
   }
 }
 const utf8 = new TextDecoder('utf-8');
+const str4 = (dv, o) => String.fromCharCode(dv.getUint8(o), dv.getUint8(o+1), dv.getUint8(o+2), dv.getUint8(o+3));
+async function readMoov(file) {
+  let off = 0;
+  while (off + 8 <= file.size) {
+    const dv = new DataView(await file.slice(off, off + 16).arrayBuffer());
+    let size = dv.getUint32(0), hdr = 8;
+    const type = str4(dv, 4);
+    if (size === 1) { size = Number(dv.getBigUint64(8)); hdr = 16; }
+    else if (size === 0) size = file.size - off;
+    if (size < hdr) break;
+    if (type === 'moov') return file.slice(off + hdr, off + size).arrayBuffer();
+    off += size;
+  }
+  return null;
+}
 async function readMeta(file) {
   const out = {title: '', artist: '', chapters: []};
   try {
-    let off = 0, moov = null;
-    while (off + 8 <= file.size) {
-      const dv = new DataView(await file.slice(off, off + 16).arrayBuffer());
-      let size = dv.getUint32(0), hdr = 8;
-      const type = String.fromCharCode(dv.getUint8(4), dv.getUint8(5), dv.getUint8(6), dv.getUint8(7));
-      if (size === 1) { size = Number(dv.getBigUint64(8)); hdr = 16; }
-      else if (size === 0) size = file.size - off;
-      if (size < hdr) break;
-      if (type === 'moov') { moov = {start: off + hdr, end: off + size}; break; }
-      off += size;
-    }
-    if (!moov) return out;
-    const buf = await file.slice(moov.start, moov.end).arrayBuffer();
+    const buf = await readMoov(file);
+    if (!buf) return out;
     const dv = new DataView(buf), u8 = new Uint8Array(buf);
     walk(dv, 0, buf.byteLength, (t, s, e) => {
       if (t !== 'udta') return;
@@ -389,6 +408,7 @@ async function openBook(id, show) {
   if (!book || !rec) return toast('No se encontró el archivo de audio');
   await savePos(true);
   unloadBook();
+  showAwayPill(book);
   cur = book; cur.marks = cur.marks || [];
   curUrl = URL.createObjectURL(rec.blob);
   audio.src = curUrl;
@@ -409,7 +429,7 @@ async function openBook(id, show) {
 function unloadBook() {
   audio.pause(); audio.removeAttribute('src'); audio.load();
   if (curUrl) URL.revokeObjectURL(curUrl);
-  curUrl = null; cur = null; clearSleep();
+  curUrl = null; cur = null; clearSleep(); $('#awayPill').classList.add('hidden');
   $('#mini').classList.add('hidden'); hidePlayer();
   if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
 }
@@ -633,6 +653,252 @@ $('#sleepBtn').onclick = () => {
     if (sleepAt || sleepChapter) body.append(row('Desactivar', () => { clearSleep(); closeSheet(); }, 'danger'));
   });
 };
+
+/* ================= resumen «¿dónde me quedé?» ================= */
+/* Recorta el audio de los últimos minutos escuchados y se lo pasa a Gemini,
+   que lo escucha y devuelve un resumen. La clave se guarda solo en este móvil. */
+const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
+const MAX_AUDIO_BYTES = 14e6;                 // la petición en línea admite ~20 MB tras base64
+const getKey = () => { try { return localStorage.getItem('geminiKey') || ''; } catch { return ''; } };
+const setKey = k => { try { k ? localStorage.setItem('geminiKey', k) : localStorage.removeItem('geminiKey'); } catch {} };
+let recapSpan = 10, recapBusy = false, trackCache = null;
+
+const ago = ms => {
+  const m = Math.round(ms / 60000), h = Math.round(ms / 3600000), d = Math.round(ms / 86400000);
+  return m < 60 ? `hace ${Math.max(1, m)} min` : h < 24 ? `hace ${h} h` : d === 1 ? 'ayer' : `hace ${d} días`;
+};
+function showAwayPill(book) {
+  const away = Date.now() - (book.lastPlayed || 0);
+  const show = book.lastPlayed && book.pos > 60 && away > 8 * 3600000;
+  $('#awayPill').classList.toggle('hidden', !show);
+  if (show) $('#awayTxt').textContent = `${ago(away).replace(/^h/, 'H')} · ¿Dónde me quedé?`;
+}
+
+/* pista de audio AAC dentro del .m4b: tablas de muestras + configuración del códec */
+function parseAudioTrack(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let tr = null;
+  walk(dv, 0, buf.byteLength, (t, s, e) => {
+    if (t !== 'trak' || tr) return;
+    const x = {};
+    const visit = (s, e) => walk(dv, s, e, (t2, s2, e2) => {
+      if (t2 === 'mdia' || t2 === 'minf' || t2 === 'stbl') visit(s2, e2);
+      else if (t2 === 'hdlr') x.handler = str4(dv, s2 + 8);
+      else if (t2 === 'mdhd') x.timescale = dv.getUint32(s2 + (dv.getUint8(s2) === 1 ? 20 : 12));
+      else if (['stts', 'stsc', 'stsz', 'stco', 'co64', 'stsd'].includes(t2)) x[t2] = s2;
+    });
+    visit(s, e);
+    if (x.handler === 'soun' && x.timescale && x.stts && x.stsc && x.stsz && x.stsd && (x.stco || x.co64)) tr = x;
+  });
+  if (!tr) return null;
+  // stsd → mp4a → esds → AudioSpecificConfig
+  const entry = tr.stsd + 8;
+  if (str4(dv, entry + 4) !== 'mp4a') return null;
+  const ver = dv.getUint16(entry + 16);
+  let asc = null;
+  walk(dv, entry + 36 + (ver === 1 ? 16 : ver === 2 ? 36 : 0), entry + dv.getUint32(entry), (t, s) => {
+    if (t !== 'esds') return;
+    const desc = p => { const tag = u8[p++]; let len = 0, b; do { b = u8[p++]; len = (len << 7) | (b & 0x7f); } while (b & 0x80); return {tag, len, p}; };
+    let d = desc(s + 4);
+    if (d.tag === 3) { let q = d.p + 2; const fl = u8[q++]; if (fl & 0x80) q += 2; if (fl & 0x40) q += 1 + u8[q]; if (fl & 0x20) q += 2; d = desc(q); }
+    if (d.tag === 4) d = desc(d.p + 13);
+    if (d.tag === 5) asc = u8.slice(d.p, d.p + d.len);
+  });
+  if (!asc || asc.length < 2) return null;
+  const aot = asc[0] >> 3, freq = ((asc[0] & 7) << 1) | (asc[1] >> 7), chans = (asc[1] >> 3) & 15;
+  if (aot === 31 || freq === 15 || !chans) return null;
+  tr.adts = {profile: aot >= 1 && aot <= 4 ? aot - 1 : 1, freq, chans};   // HE-AAC → cabecera LC, el decodificador detecta SBR
+  tr.dv = dv;
+  return tr;
+}
+function sampleAt(tr, mt) {
+  const dv = tr.dv, n = dv.getUint32(tr.stts + 4);
+  let p = tr.stts + 8, idx = 0, time = 0;
+  for (let i = 0; i < n; i++, p += 8) {
+    const c = dv.getUint32(p), d = dv.getUint32(p + 4);
+    if (time + c * d > mt) return idx + Math.floor((mt - time) / d);
+    time += c * d; idx += c;
+  }
+  return idx;
+}
+function sampleSpans(tr, a, b) {                // [offset, tamaño] de las muestras a..b-1
+  const dv = tr.dv, out = [];
+  const fixed = dv.getUint32(tr.stsz + 4), size = i => fixed || dv.getUint32(tr.stsz + 12 + i * 4);
+  const co = tr.stco || tr.co64, nChunks = dv.getUint32(co + 4);
+  const chunkOff = c => tr.co64 ? Number(dv.getBigUint64(co + 8 + c * 8)) : dv.getUint32(co + 8 + c * 4);
+  const runs = dv.getUint32(tr.stsc + 4);
+  let sample = 0;
+  for (let r = 0; r < runs; r++) {
+    const first = dv.getUint32(tr.stsc + 8 + r * 12), spc = dv.getUint32(tr.stsc + 12 + r * 12);
+    const next = r + 1 < runs ? dv.getUint32(tr.stsc + 8 + (r + 1) * 12) : nChunks + 1;
+    if (sample + spc * (next - first) <= a) { sample += spc * (next - first); continue; }
+    for (let c = first; c < next; c++) {
+      if (sample + spc <= a) { sample += spc; continue; }
+      let off = chunkOff(c - 1);
+      for (let k = 0; k < spc; k++, sample++) {
+        if (sample >= b) return out;
+        const sz = size(sample);
+        if (sample >= a) out.push([off, sz]);
+        off += sz;
+      }
+    }
+  }
+  return out;
+}
+async function extractAudio(t0, t1) {
+  const rec = await dbGet('blobs', cur.id), file = rec.blob;
+  if (!trackCache || trackCache.id !== cur.id) {
+    const moov = await readMoov(file);
+    trackCache = {id: cur.id, tr: moov && parseAudioTrack(moov)};
+  }
+  const tr = trackCache.tr;
+  if (tr) {
+    let spans = sampleSpans(tr, sampleAt(tr, t0 * tr.timescale), sampleAt(tr, t1 * tr.timescale));
+    let total = 0, from = spans.length;
+    while (from > 0 && total + spans[from - 1][1] + 7 <= MAX_AUDIO_BYTES) total += spans[--from][1] + 7;
+    spans = spans.slice(from);
+    if (!spans.length) throw new Error('No hay audio en ese tramo');
+    let lo = Infinity, hi = 0;
+    for (const [off, sz] of spans) { lo = Math.min(lo, off); hi = Math.max(hi, off + sz); }
+    const src = new Uint8Array(await file.slice(lo, hi).arrayBuffer());
+    const out = new Uint8Array(total), {profile, freq, chans} = tr.adts;
+    let p = 0;
+    for (const [off, sz] of spans) {         // cada trama AAC con su cabecera ADTS
+      const len = sz + 7;
+      out.set([0xFF, 0xF1, (profile << 6) | (freq << 2) | (chans >> 2), ((chans & 3) << 6) | (len >> 11), (len >> 3) & 0xFF, ((len & 7) << 5) | 0x1F, 0xFC], p);
+      out.set(src.subarray(off - lo, off - lo + sz), p + 7);
+      p += len;
+    }
+    return {blob: new Blob([out], {type: 'audio/aac'}), mime: 'audio/aac'};
+  }
+  if (/mpeg|mp3/.test(file.type) || /\.mp3$/i.test(file.name || '')) {   // MP3: corte proporcional, las tramas se resincronizan solas
+    const bps = file.size / (cur.duration || audio.duration), a = Math.floor(t0 * bps);
+    const b = Math.min(file.size, Math.ceil(t1 * bps), a + MAX_AUDIO_BYTES);
+    return {blob: file.slice(a, b), mime: 'audio/mp3'};
+  }
+  throw new Error('Este formato de audio aún no se puede resumir');
+}
+const toBase64 = blob => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result.slice(r.result.indexOf(',') + 1));
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(blob);
+});
+async function askGemini(key, b64, mime, prompt) {
+  const body = {
+    contents: [{role: 'user', parts: [{inline_data: {mime_type: mime, data: b64}}, {text: prompt}]}],
+    generationConfig: {responseMimeType: 'application/json', responseSchema: {type: 'OBJECT',
+      properties: {donde: {type: 'STRING'}, temas: {type: 'ARRAY', items: {type: 'STRING'}}, ultima: {type: 'STRING'}},
+      required: ['donde', 'temas', 'ultima']}}
+  };
+  for (const model of GEMINI_MODELS) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': key}, body: JSON.stringify(body)});
+    if (r.status === 404) continue;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = j.error?.message || 'HTTP ' + r.status;
+      if (/api key/i.test(msg)) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
+      if (r.status === 429) throw new Error('Has superado el límite gratuito de Gemini por ahora. Prueba en un rato.');
+      throw new Error(msg);
+    }
+    const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+    if (!txt) throw new Error('Gemini no devolvió respuesta');
+    return JSON.parse(txt);
+  }
+  throw new Error('No se encontró un modelo de Gemini disponible');
+}
+async function makeRecap(min) {
+  const t1 = audio.currentTime, t0 = Math.max(0, t1 - min * 60);
+  const i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
+  const dur = audio.duration || cur.duration, pct = dur ? Math.round(t1 / dur * 100) : 0;
+  const {blob, mime} = await extractAudio(t0, t1);
+  const prev = cur.recap && cur.recap.pos < t0 ? cur.recap.data : null;
+  const prompt = `Ayudas a alguien a retomar un audiolibro. El audio adjunto son los últimos ${Math.round((t1 - t0) / 60)} minutos que escuchó de «${cur.title}»` +
+    (cur.artist ? ` (${cur.artist})` : '') + (chap ? `, dentro de «${chap}»` : '') + `. Va por el ${pct} % del libro.\n` +
+    (prev ? `Contexto de un resumen anterior, de más atrás en el libro: ${prev.donde} ${prev.temas.join(' ')}\n` : '') +
+    `Responde en español, claro y breve, para que recuerde de qué iba:\n` +
+    `- donde: una o dos frases sobre en qué parte del libro está y de qué trata este tramo.\n` +
+    `- temas: entre 3 y 6 puntos, en orden, con las ideas, argumentos, ejemplos, casos o personas que se mencionan.\n` +
+    `- ultima: la idea concreta que se estaba explicando justo al final del audio, donde lo dejó.\n` +
+    `Cíñete a lo que se oye en el audio; no inventes.`;
+  const data = await askGemini(getKey(), await toBase64(blob), mime, prompt);
+  cur.recap = {pos: t1, min, chapter: chap, date: Date.now(), data};
+  await dbPut('books', cur);
+  return cur.recap;
+}
+
+function recapCard(r, title) {
+  const box = document.createElement('div'); box.className = 'recap';
+  if (title) { const h = document.createElement('div'); h.className = 'hint'; h.style.padding = '0 0 8px'; h.textContent = title; box.append(h); }
+  const lead = document.createElement('p'); lead.className = 'lead'; lead.textContent = r.data.donde;
+  const ul = document.createElement('ul');
+  for (const t of r.data.temas || []) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
+  const last = document.createElement('p'); last.className = 'last';
+  const b = document.createElement('b'); b.textContent = 'Lo dejaste en'; last.append(b, r.data.ultima);
+  const meta = document.createElement('p'); meta.className = 'meta';
+  meta.textContent = `${r.chapter ? r.chapter + ' · ' : ''}${fmt(r.pos)} · últimos ${r.min} min · ${ago(Date.now() - r.date)}`;
+  box.append(lead, ul, last, meta);
+  return box;
+}
+function keyForm(body, after) {
+  const h = document.createElement('div'); h.className = 'hint';
+  h.innerHTML = 'Para resumir, la app manda el trozo de audio a Google Gemini, que lo escucha y lo resume. ' +
+    'Necesitas una clave gratuita: entra en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, ' +
+    'pulsa «Create API key», cópiala y pégala aquí. Se guarda solo en este móvil.';
+  const i = document.createElement('input'); i.className = 'text'; i.type = 'password'; i.placeholder = 'Pega aquí tu clave (AIza…)';
+  i.autocomplete = 'off'; i.value = getKey();
+  const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = 'Guardar clave';
+  ok.onclick = () => { const k = i.value.trim(); if (!k) return toast('Pega la clave primero'); setKey(k); toast('Clave guardada'); after(); };
+  body.append(h, i, ok);
+}
+function openRecap() {
+  if (!cur) return;
+  $('#awayPill').classList.add('hidden');
+  sheet('¿Dónde me quedé?', body => {
+    if (!getKey()) return keyForm(body, openRecap);
+    const r = cur.recap, fresh = r && Math.abs(r.pos - audio.currentTime) < 90;
+    if (fresh) body.append(recapCard(r));
+    const wrap = document.createElement('div'); wrap.className = 'chips';
+    const go = document.createElement('button'); go.className = 'primary';
+    const label = () => go.textContent = `${fresh ? 'Rehacer' : 'Resumir'} los últimos ${recapSpan} min`;
+    for (const m of [5, 10, 20]) {
+      const c = document.createElement('button'); c.className = 'chip' + (m === recapSpan ? ' on' : ''); c.textContent = m + ' min';
+      c.onclick = () => { recapSpan = m; wrap.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === c)); label(); };
+      wrap.append(c);
+    }
+    label();
+    go.onclick = async () => {
+      if (recapBusy) return;
+      recapBusy = true;
+      const wasPlaying = !audio.paused; audio.pause();
+      body.innerHTML = '<div class="busy"><i></i><span>Escuchando el tramo y resumiendo… suele tardar unos segundos.</span></div>';
+      try {
+        const res = await makeRecap(recapSpan);
+        if (!$('#sheet')) return;
+        body.innerHTML = ''; body.append(recapCard(res));
+        const cont = document.createElement('button'); cont.className = 'primary'; cont.textContent = 'Seguir escuchando';
+        cont.onclick = () => { closeSheet(); audio.play().catch(() => {}); };
+        body.append(cont);
+      } catch (e) {
+        console.error(e);
+        if (!$('#sheet')) return;
+        body.innerHTML = '';
+        const h = document.createElement('div'); h.className = 'hint'; h.style.color = 'var(--danger)';
+        h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' :
+          e instanceof TypeError ? 'No hay conexión a internet (o Gemini no responde). El resumen necesita conexión.' : 'No se pudo resumir: ' + e.message;
+        body.append(h);
+        if (e.badKey) keyForm(body, openRecap); else body.append(row('Reintentar', openRecap));
+        if (wasPlaying) audio.play().catch(() => {});
+      } finally { recapBusy = false; }
+    };
+    body.append(wrap, go);
+    if (r && !fresh) body.append(recapCard(r, 'Resumen anterior'));
+    body.append(row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
+  });
+}
+$('#recapBtn').onclick = openRecap;
+$('#awayPill').onclick = openRecap;
 
 /* ================= arranque ================= */
 (async () => {
