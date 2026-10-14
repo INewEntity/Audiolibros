@@ -229,7 +229,7 @@ details.why li{margin:4px 0;word-break:break-word}
 'use strict';
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
-const APP_VERSION = 9;                        // súbelo junto con CACHE en sw.js
+const APP_VERSION = 10;                        // súbelo junto con CACHE en sw.js
 
 /* ================= almacenamiento (IndexedDB) ================= */
 const dbp = new Promise((res, rej) => {
@@ -824,6 +824,7 @@ $('#sleepBtn').onclick = () => {
 const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'];
 const REQUEST_TIMEOUT = 60000;                // por intento; después se prueba otro modelo
 const MAX_AUDIO_BYTES = 14e6;                 // la petición en línea admite ~20 MB tras base64
+const MAX_UPLOAD_BYTES = 300e6;               // más grande se sube como archivo (Files API, gratis)
 const getKey = () => { try { return localStorage.getItem('geminiKey') || ''; } catch { return ''; } };
 const setKey = k => { try { k ? localStorage.setItem('geminiKey', k) : localStorage.removeItem('geminiKey'); } catch {} };
 let recapSpan = 10, recapBusy = false, trackCache = null;
@@ -928,7 +929,7 @@ function sampleSpans(tr, a, b) {                // [offset, tamaño] de las mues
   }
   return out;
 }
-async function extractAudio(t0, t1) {
+async function extractAudio(t0, t1, maxBytes = MAX_AUDIO_BYTES) {
   const rec = await dbGet('blobs', cur.id), file = rec.blob;
   if (!trackCache || trackCache.id !== cur.id) {
     const moov = await readMoov(file);
@@ -938,7 +939,7 @@ async function extractAudio(t0, t1) {
   if (tr) {
     let spans = sampleSpans(tr, sampleAt(tr, t0 * tr.timescale), sampleAt(tr, t1 * tr.timescale));
     let total = 0, from = spans.length;
-    while (from > 0 && total + spans[from - 1][1] + 7 <= MAX_AUDIO_BYTES) total += spans[--from][1] + 7;
+    while (from > 0 && total + spans[from - 1][1] + 7 <= maxBytes) total += spans[--from][1] + 7;
     spans = spans.slice(from);
     if (!spans.length) throw new Error('No hay audio en ese tramo');
     let lo = Infinity, hi = 0;
@@ -956,7 +957,7 @@ async function extractAudio(t0, t1) {
   }
   if (/mpeg|mp3/.test(file.type) || /\.mp3$/i.test(file.name || '')) {   // MP3: corte proporcional, las tramas se resincronizan solas
     const bps = file.size / (cur.duration || audio.duration), a = Math.floor(t0 * bps);
-    const b = Math.min(file.size, Math.ceil(t1 * bps), a + MAX_AUDIO_BYTES);
+    const b = Math.min(file.size, Math.ceil(t1 * bps), a + maxBytes);
     return {blob: file.slice(a, b), mime: 'audio/mp3'};
   }
   throw new Error('Este formato de audio aún no se puede resumir');
@@ -993,9 +994,9 @@ async function listModels(key) {
 const RECAP_SCHEMA = {type: 'OBJECT', required: ['donde', 'temas', 'ultima'],
   properties: {donde: {type: 'STRING'}, temas: {type: 'ARRAY', items: {type: 'STRING'}}, ultima: {type: 'STRING'}}};
 const ANSWER_SCHEMA = {type: 'OBJECT', required: ['respuesta'], properties: {respuesta: {type: 'STRING'}}};
-async function askGemini(key, b64, mime, prompt, onStatus, schema) {
+async function askGemini(key, media, prompt, onStatus, schema, timeout = REQUEST_TIMEOUT) {
   const body = {
-    contents: [{role: 'user', parts: [{inline_data: {mime_type: mime, data: b64}}, {text: prompt}]}],
+    contents: [{role: 'user', parts: [media, {text: prompt}]}],
     generationConfig: {responseMimeType: 'application/json', responseSchema: schema}
   };
   const payload = JSON.stringify(body), models = await listModels(key), log = [];
@@ -1003,7 +1004,7 @@ async function askGemini(key, b64, mime, prompt, onStatus, schema) {
   // Saturado (5xx), sin cupo (429, va por modelo), lento u otro fallo → se prueba el siguiente modelo.
   for (const [n, model] of models.entries()) {
     if (n) onStatus(`Probando otro modelo (${n + 1} de ${models.length}): ${model}…`);
-    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT);
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeout);
     let r, j;
     try {
       r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -1011,7 +1012,7 @@ async function askGemini(key, b64, mime, prompt, onStatus, schema) {
       j = await r.json().catch(() => ({}));
     } catch (e) {
       if (e.name !== 'AbortError') throw e;                     // sin conexión
-      slow = true; log.push(`${model}: tardó más de ${REQUEST_TIMEOUT / 1000} s`); continue;
+      slow = true; log.push(`${model}: tardó más de ${Math.round(timeout / 1000)} s`); continue;
     } finally { clearTimeout(timer); }
     const msg = (j.error?.message || '').split('\n')[0].slice(0, 140);
     if (r.ok) {
@@ -1046,7 +1047,7 @@ async function makeRecap(min, onStatus) {
     `Cíñete a lo que se oye en el audio; no inventes.`;
   const b64 = await toBase64(blob);
   onStatus('Gemini está escuchando el tramo y resumiendo… suele tardar entre 10 y 40 segundos.');
-  const data = await askGemini(getKey(), b64, mime, prompt, onStatus, RECAP_SCHEMA);
+  const data = await askGemini(getKey(), {inline_data: {mime_type: mime, data: b64}}, prompt, onStatus, RECAP_SCHEMA);
   cur.recap = {pos: t1, min, chapter: chap, date: Date.now(), data};
   await addNote({type: 'recap', ...cur.recap});
   return cur.recap;
@@ -1093,7 +1094,7 @@ function noteCard(n, {title, jump, del} = {}) {
     box.append(lead, ul, last);
   }
   const meta = document.createElement('p'); meta.className = 'meta' + (jump ? ' go' : '');
-  meta.textContent = `${n.chapter ? n.chapter + ' · ' : ''}${fmt(n.pos)}${n.min ? ` · últimos ${n.min} min` : ''}${n.date ? ' · ' + ago(Date.now() - n.date) : ''}${jump ? ' · ir aquí' : ''}`;
+  meta.textContent = `${n.chapter ? n.chapter + ' · ' : ''}${fmt(n.pos)}${n.min ? (n.whole ? ` · capítulo desde el inicio (${n.min} min)` : ` · últimos ${n.min} min`) : ''}${n.date ? ' · ' + ago(Date.now() - n.date) : ''}${jump ? ' · ir aquí' : ''}`;
   if (jump) meta.onclick = () => { audio.currentTime = n.pos; closeSheet(); };
   box.append(meta);
   const acts = document.createElement('div'); acts.className = 'acts';
@@ -1270,24 +1271,54 @@ function openRecap() {
   });
 }
 
-/* ---------- preguntar al libro ---------- */
-const ASK_MINUTES = 5;
+/* ---------- preguntar al libro: escucha el capítulo actual desde su inicio hasta donde vas ---------- */
+const NO_CHAPTER_MINUTES = 30;                // libros sin capítulos: últimos 30 min
+let uploadCache = null;                       // último audio subido, para no resubirlo en cada pregunta
+async function audioPart(t0, t1, onStatus) {
+  const {blob, mime} = await extractAudio(t0, t1, MAX_UPLOAD_BYTES);
+  if (blob.size <= MAX_AUDIO_BYTES) return {inline_data: {mime_type: mime, data: await toBase64(blob)}};
+  const key = getKey(), c = uploadCache;
+  if (c && c.key === key && c.bookId === cur.id && Math.abs(c.t0 - t0) < 1 && Math.abs(c.t1 - t1) < 20 && Date.now() - c.at < 40 * 3600000)
+    return {file_data: {mime_type: c.mime, file_uri: c.uri}};
+  onStatus(`Subiendo el audio del capítulo a Gemini (${Math.round(blob.size / 1e6)} MB)…`);
+  const r = await fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
+    method: 'POST', headers: {'x-goog-api-key': key, 'X-Goog-Upload-Protocol': 'raw', 'Content-Type': mime}, body: blob});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = j.error?.message || 'HTTP ' + r.status;
+    if (/api key/i.test(msg)) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
+    throw new Error('No se pudo subir el audio a Gemini: ' + msg);
+  }
+  let f = j.file || j;
+  for (let k = 0; f.state === 'PROCESSING' && k < 90; k++) {   // Gemini prepara el archivo unos segundos
+    onStatus('Gemini está preparando el audio…');
+    await new Promise(res => setTimeout(res, 2000));
+    f = await fetch(`https://generativelanguage.googleapis.com/v1beta/${f.name}`, {headers: {'x-goog-api-key': key}}).then(x => x.json());
+  }
+  if (f.state !== 'ACTIVE' || !f.uri) throw new Error('Gemini no pudo preparar el audio');
+  uploadCache = {key, bookId: cur.id, t0, t1, uri: f.uri, mime: f.mimeType || mime, at: Date.now()};
+  return {file_data: {mime_type: uploadCache.mime, file_uri: f.uri}};
+}
 async function askBook(question, onStatus) {
-  onStatus('Preparando el audio…');
-  const t1 = audio.currentTime, t0 = Math.max(0, t1 - ASK_MINUTES * 60);
-  const i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
-  const {blob, mime} = await extractAudio(t0, t1);
-  const b64 = await toBase64(blob);
-  const ctx = notesOf(cur).filter(n => n.type === 'recap' && n.pos <= t1 + 5).slice(-2).map(n => n.data.donde).join(' ');
-  const prompt = `Alguien está escuchando el audiolibro «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}${chap ? `, en «${chap}»` : ''}. ` +
-    `El audio adjunto son los últimos ${Math.round((t1 - t0) / 60)} minutos que ha escuchado.\n` +
-    (ctx ? `Contexto de resúmenes anteriores: ${ctx}\n` : '') +
+  onStatus('Preparando el audio del capítulo…');
+  const t1 = audio.currentTime, i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
+  let t0 = i >= 0 ? chapters()[i].start : t1 - NO_CHAPTER_MINUTES * 60;
+  t0 = Math.max(0, Math.min(t0, t1 - 180));     // al menos 3 min, aunque el capítulo acabe de empezar
+  const mins = Math.max(1, Math.round((t1 - t0) / 60)), whole = i >= 0 && t0 === chapters()[i].start;
+  const media = await audioPart(t0, t1, onStatus);
+  const ctx = notesOf(cur).filter(n => n.type === 'recap' && n.pos < t0).slice(-2).map(n => n.data.donde).join(' ');
+  const prompt = `Alguien está escuchando el audiolibro «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}. ` +
+    (whole ? `El audio adjunto es el capítulo «${chap}» desde su inicio hasta donde va el oyente (${mins} min).\n`
+      : i >= 0 ? `El audio adjunto son los últimos ${mins} minutos que ha escuchado: el final del capítulo anterior y el comienzo de «${chap}».\n`
+      : `El audio adjunto son los últimos ${mins} minutos que ha escuchado.\n`) +
+    (ctx ? `Contexto de capítulos anteriores: ${ctx}\n` : '') +
     `Su pregunta: «${question}»\n` +
+    `Si la pregunta habla de «esto» o «lo último», se refiere al final del audio. ` +
     `Responde en español, claro y directo, en un máximo de unas 150 palabras y sin formato markdown. ` +
     `Básate en el audio; si hace falta, completa con conocimiento general del tema y dilo. Si la respuesta no está en el audio, indícalo.`;
-  onStatus('Gemini está escuchando y pensando la respuesta…');
-  const data = await askGemini(getKey(), b64, mime, prompt, onStatus, ANSWER_SCHEMA);
-  const note = {type: 'qa', pos: t1, chapter: chap, date: Date.now(), q: question, a: data.respuesta, min: ASK_MINUTES};
+  onStatus(`Gemini está escuchando ${mins} min del capítulo y pensando la respuesta…`);
+  const data = await askGemini(getKey(), media, prompt, onStatus, ANSWER_SCHEMA, REQUEST_TIMEOUT + mins * 1500);
+  const note = {type: 'qa', pos: t1, chapter: chap, date: Date.now(), q: question, a: data.respuesta, min: mins, whole};
   await addNote(note);
   return note;
 }
@@ -1296,7 +1327,8 @@ function openAsk() {
   if (!getKey()) return sheet('Preguntar al libro', b => keyForm(b, openAsk));
   sheet('Preguntar al libro', body => {
     const h = document.createElement('div'); h.className = 'hint';
-    h.textContent = `Pregunta sobre lo que acabas de oír. Gemini escucha los últimos ${ASK_MINUTES} minutos y te responde; la respuesta se guarda en tus apuntes.`;
+    h.textContent = (chapters() ? 'Gemini escucha el capítulo actual desde su inicio hasta donde vas' : `Gemini escucha los últimos ${NO_CHAPTER_MINUTES} minutos`) +
+      ' y te responde. La respuesta se guarda en tus apuntes.';
     const {field, input} = textField('Escribe o dicta tu pregunta…');
     const sug = document.createElement('div'); sug.className = 'chips';
     for (const t of ['Explícamelo más sencillo', 'Ponme un ejemplo práctico', '¿Cuál es la idea principal?', '¿Qué significa este concepto?']) {
