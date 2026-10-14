@@ -117,6 +117,12 @@ input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radi
 .recap .last b{display:block;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--accent);margin-bottom:2px}
 .recap .meta{color:var(--muted);font-size:12.5px;margin:12px 0 0}
 .hint a{color:var(--accent)}
+.quota{margin:2px 14px 10px;font-size:12.5px;color:var(--muted)}
+.quota .bar{height:6px;margin:6px 0 4px}
+.quota .bar i.low{background:var(--danger)}
+.tool .qbar{width:32px;height:3px;border-radius:2px;background:var(--surface2);overflow:hidden;margin-top:-2px}
+.tool .qbar i{display:block;height:100%;background:var(--accent)}
+.tool .qbar i.low{background:var(--danger)}
 .busy{display:flex;align-items:center;gap:12px;padding:18px 14px;color:var(--muted)}
 .busy i{width:20px;height:20px;border:3px solid var(--surface2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -171,7 +177,7 @@ input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radi
       <button class="tool" id="sleepBtn"><b id="sleepLbl"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg></b>Dormir</button>
       <button class="tool" id="chapBtn"><b><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></b>Capítulos</button>
       <button class="tool" id="markBtn"><b><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg></b>Marcadores</button>
-      <button class="tool" id="recapBtn"><b><svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></b>Resumen</button>
+      <button class="tool" id="recapBtn"><b><svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></b>Resumen<span class="qbar hidden" id="qbar"><i></i></span></button>
     </div>
   </div>
 </section>
@@ -660,8 +666,63 @@ $('#sleepBtn').onclick = () => {
 const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
 const MAX_AUDIO_BYTES = 14e6;                 // la petición en línea admite ~20 MB tras base64
 const getKey = () => { try { return localStorage.getItem('geminiKey') || ''; } catch { return ''; } };
-const setKey = k => { try { k ? localStorage.setItem('geminiKey', k) : localStorage.removeItem('geminiKey'); } catch {} };
+const setKey = k => { try { k ? localStorage.setItem('geminiKey', k) : localStorage.removeItem('geminiKey'); } catch {} renderQuotaMini(); };
 let recapSpan = 10, recapBusy = false, trackCache = null;
+
+/* cuota: Google no permite consultar lo que queda, así que se cuenta aquí.
+   El límite diario es una estimación hasta que un error 429 trae el valor real.
+   El contador se reinicia a medianoche de California, como el de Google. */
+const DEFAULT_DAILY = 100;
+const ptDay = (d = new Date()) => new Intl.DateTimeFormat('en-CA', {timeZone: 'America/Los_Angeles'}).format(d);
+function nextReset() {
+  const now = new Date();
+  const off = new Intl.DateTimeFormat('en-US', {timeZone: 'America/Los_Angeles', timeZoneName: 'shortOffset'})
+    .formatToParts(now).find(p => p.type === 'timeZoneName').value;          // «GMT-7»
+  const h = Number((off.match(/[+-]\d+/) || ['-8'])[0]);
+  const [y, m, d] = ptDay(now).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1) - h * 3600000);
+}
+function getUsage() {
+  let u = {};
+  try { u = JSON.parse(localStorage.getItem('geminiUsage')) || {}; } catch {}
+  if (u.day !== ptDay()) u = {day: ptDay(), used: 0, limit: u.limit || DEFAULT_DAILY, exact: !!u.exact};
+  return u;
+}
+function setUsage(u) { try { localStorage.setItem('geminiUsage', JSON.stringify(u)); } catch {} renderQuotaMini(); }
+function noteQuotaError(j) {               // lee del 429 qué límite se superó
+  const det = j.error?.details || [];
+  const v = det.find(d => /QuotaFailure/.test(d['@type']))?.violations || [];
+  const retry = det.find(d => /RetryInfo/.test(d['@type']))?.retryDelay;
+  const daily = v.find(x => /PerDay/i.test(x.quotaId || ''));
+  const u = getUsage();
+  if (daily) {
+    if (Number(daily.quotaValue) > 0) { u.limit = Number(daily.quotaValue); u.exact = true; }
+    u.used = Math.max(u.used, u.limit); setUsage(u);
+    return `Has gastado los resúmenes gratis de hoy. Se renuevan a las ${nextReset().toLocaleTimeString('es', {hour: '2-digit', minute: '2-digit'})}.`;
+  }
+  const s = Math.ceil(parseFloat(retry) || 60);
+  return `Demasiadas peticiones seguidas. Espera ${s} segundos y vuelve a intentarlo.`;
+}
+function quotaPct(u) { return Math.max(0, Math.min(100, (1 - u.used / u.limit) * 100)); }
+function renderQuotaMini() {
+  const q = $('#qbar'); if (!q) return;
+  q.classList.toggle('hidden', !getKey());
+  const u = getUsage(), p = quotaPct(u), i = q.querySelector('i');
+  i.style.width = p + '%'; i.classList.toggle('low', p < 20);
+}
+function quotaBox() {
+  const u = getUsage(), p = quotaPct(u), left = Math.max(0, u.limit - u.used);
+  const box = document.createElement('div'); box.className = 'quota';
+  const top = document.createElement('div');
+  top.textContent = `Quedan ${u.exact ? '' : '≈'}${left} de ${u.limit} resúmenes hoy`;
+  const bar = document.createElement('div'); bar.className = 'bar';
+  const i = document.createElement('i'); i.style.width = p + '%'; i.classList.toggle('low', p < 20); bar.append(i);
+  const foot = document.createElement('div');
+  foot.textContent = `Se renueva a las ${nextReset().toLocaleTimeString('es', {hour: '2-digit', minute: '2-digit'})}` +
+    (u.exact ? '' : ' · límite estimado, Google no permite consultarlo');
+  box.append(top, bar, foot);
+  return box;
+}
 
 const ago = ms => {
   const m = Math.round(ms / 60000), h = Math.round(ms / 3600000), d = Math.round(ms / 86400000);
@@ -796,12 +857,13 @@ async function askGemini(key, b64, mime, prompt) {
       method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': key}, body: JSON.stringify(body)});
     if (r.status === 404) continue;
     const j = await r.json().catch(() => ({}));
+    if (r.status === 429) throw new Error(noteQuotaError(j));
     if (!r.ok) {
       const msg = j.error?.message || 'HTTP ' + r.status;
       if (/api key/i.test(msg)) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
-      if (r.status === 429) throw new Error('Has superado el límite gratuito de Gemini por ahora. Prueba en un rato.');
       throw new Error(msg);
     }
+    const u = getUsage(); u.used++; setUsage(u);
     const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
     if (!txt) throw new Error('Gemini no devolvió respuesta');
     return JSON.parse(txt);
@@ -879,7 +941,7 @@ function openRecap() {
         body.innerHTML = ''; body.append(recapCard(res));
         const cont = document.createElement('button'); cont.className = 'primary'; cont.textContent = 'Seguir escuchando';
         cont.onclick = () => { closeSheet(); audio.play().catch(() => {}); };
-        body.append(cont);
+        body.append(cont, quotaBox());
       } catch (e) {
         console.error(e);
         if (!$('#sheet')) return;
@@ -888,11 +950,12 @@ function openRecap() {
         h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' :
           e instanceof TypeError ? 'No hay conexión a internet (o Gemini no responde). El resumen necesita conexión.' : 'No se pudo resumir: ' + e.message;
         body.append(h);
-        if (e.badKey) keyForm(body, openRecap); else body.append(row('Reintentar', openRecap));
+        if (e.badKey) keyForm(body, openRecap); else body.append(quotaBox(), row('Reintentar', openRecap));
         if (wasPlaying) audio.play().catch(() => {});
       } finally { recapBusy = false; }
     };
     body.append(wrap, go);
+    body.append(quotaBox());
     if (r && !fresh) body.append(recapCard(r, 'Resumen anterior'));
     body.append(row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
   });
@@ -902,7 +965,7 @@ $('#awayPill').onclick = openRecap;
 
 /* ================= arranque ================= */
 (async () => {
-  updatePlayIcons();
+  updatePlayIcons(); renderQuotaMini();
   try { navigator.storage?.persist?.(); } catch {}
   await loadLibrary();
   let last; try { last = localStorage.getItem('last'); } catch {}
