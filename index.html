@@ -130,6 +130,38 @@ details.why li{margin:4px 0;word-break:break-word}
 .busy{display:flex;align-items:center;gap:12px;padding:18px 14px;color:var(--muted)}
 .busy i{width:20px;height:20px;border:3px solid var(--surface2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
 @keyframes spin{to{transform:rotate(360deg)}}
+.cover.img,#bigcover.img{background-size:cover!important;background-position:center!important;color:transparent}
+.hdr-actions{display:flex;align-items:center;gap:6px}
+.btn-more{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:var(--text)}
+.btn-more:active{background:var(--surface2)}
+.btn-more svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.acts .listen{margin-top:0}
+.listen.danger{color:var(--danger)}
+.recap .q{font-weight:700;margin:0 0 8px}
+.recap .a{margin:0;white-space:pre-wrap}
+.recap .meta.go{cursor:pointer;color:var(--accent)}
+.field{display:flex;gap:8px;align-items:flex-start;margin:6px 10px 10px}
+.field textarea{flex:1;min-height:76px;resize:vertical;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+.mic{flex:none;width:48px;height:48px;border-radius:50%;background:var(--surface2);display:grid;place-items:center;color:var(--text)}
+.mic svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.mic.on{background:var(--danger);color:#fff;animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.6}}
+.chaph{font-family:var(--serif);font-size:16px;margin:16px 14px 6px;color:var(--muted)}
+.mark{display:flex;align-items:center;gap:4px;border-radius:12px}
+.mark .go{flex:1;min-width:0;text-align:left;padding:12px;border-radius:12px;display:flex;flex-direction:column;gap:2px}
+.mark .go:active{background:var(--surface2)}
+.mark .go span{font-size:16px}
+.mark .go small{color:var(--muted);font-size:13px}
+.mark .x{color:var(--muted);width:40px;height:40px;display:grid;place-items:center;border-radius:50%;flex:none;font-size:16px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 10px 14px}
+.stat{background:var(--surface2);border-radius:14px;padding:12px 8px;text-align:center}
+.stat b{display:block;font-family:var(--serif);font-size:22px}
+.stat span{font-size:12px;color:var(--muted)}
+.week{display:flex;align-items:flex-end;gap:8px;height:120px;margin:4px 14px 6px}
+.week div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:4px;font-size:11px;color:var(--muted)}
+.week i{display:block;width:100%;max-width:28px;border-radius:6px 6px 2px 2px;background:var(--accent);min-height:3px}
+.week .today{color:var(--text);font-weight:700}
 #toast{position:fixed;left:50%;bottom:calc(100px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:var(--bg);padding:12px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:90vw;text-align:center}
 </style>
 </head>
@@ -138,7 +170,8 @@ details.why li{margin:4px 0;word-break:break-word}
 <main id="library">
   <header class="top">
     <div><h1>Audiolibros</h1><p id="subtitle"></p></div>
-    <button class="btn-add" id="addBtn">+ Añadir</button>
+    <div class="hdr-actions"><button class="btn-more" id="moreBtn" aria-label="Más opciones"><svg viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+    <button class="btn-add" id="addBtn">+ Añadir</button></div>
   </header>
   <div class="list" id="list"></div>
   <p class="ver" id="ver"></p>
@@ -188,6 +221,7 @@ details.why li{margin:4px 0;word-break:break-word}
 </section>
 
 <input type="file" id="file" accept="audio/*,.m4b,.m4a,.mp3" multiple hidden>
+<input type="file" id="restoreFile" accept="application/json,.json" hidden>
 <audio id="audio" preload="metadata"></audio>
 <div id="toast" class="hidden"></div>
 
@@ -195,7 +229,7 @@ details.why li{margin:4px 0;word-break:break-word}
 'use strict';
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
-const APP_VERSION = 8;                        // súbelo junto con CACHE en sw.js
+const APP_VERSION = 9;                        // súbelo junto con CACHE en sw.js
 
 /* ================= almacenamiento (IndexedDB) ================= */
 const dbp = new Promise((res, rej) => {
@@ -273,7 +307,7 @@ async function readMoov(file) {
   return null;
 }
 async function readMeta(file) {
-  const out = {title: '', artist: '', chapters: []};
+  const out = {title: '', artist: '', chapters: [], cover: null};
   try {
     const buf = await readMoov(file);
     if (!buf) return out;
@@ -295,6 +329,10 @@ async function readMeta(file) {
             walk(dv, s3, e3, (t4, s4, e4) => {
               walk(dv, s4, e4, (t5, s5, e5) => {
                 if (t5 !== 'data') return;
+                if (t4 === 'covr') {                    // portada: tipo 13 = JPEG, 14 = PNG
+                  if (!out.cover) out.cover = new Blob([u8.slice(s5 + 8, e5)], {type: (dv.getUint32(s5) & 0xffffff) === 14 ? 'image/png' : 'image/jpeg'});
+                  return;
+                }
                 const txt = utf8.decode(u8.subarray(s5 + 8, e5));
                 if (t4 === '\xa9nam') out.title = txt;
                 else if (t4 === '\xa9ART' || t4 === 'aART') out.artist = out.artist || txt;
@@ -322,20 +360,47 @@ let books = [];
 async function loadLibrary() {
   books = (await dbAll('books')).sort((a, b) => (b.lastPlayed || b.added) - (a.lastPlayed || a.added));
   renderLibrary();
+  ensureCovers();
+}
+/* portadas: las de libros añadidos antes de esta versión se sacan del archivo una sola vez */
+const coverUrls = new Map();
+function paintCover(el, b) {
+  el.style.background = colorOf(b.id);
+  if (b.cover) {
+    let u = coverUrls.get(b.id);
+    if (!u) coverUrls.set(b.id, u = URL.createObjectURL(b.cover));
+    el.style.backgroundImage = `url("${u}")`; el.classList.add('img'); el.textContent = '';
+  } else { el.classList.remove('img'); el.textContent = initial(b.title); }
+}
+let coversRunning = false;
+async function ensureCovers() {
+  if (coversRunning) return; coversRunning = true;
+  try {
+    for (const b of books.filter(x => x.cover === undefined)) {
+      const rec = await dbGet('blobs', b.id);
+      b.cover = rec ? (await readMeta(rec.blob)).cover : null;
+      if (cur && cur.id === b.id) { cur.cover = b.cover; updateUI(); }
+      await dbPut('books', b);
+      renderLibrary();
+    }
+  } catch (e) { console.warn('portadas', e); } finally { coversRunning = false; }
 }
 function renderLibrary() {
   const list = $('#list');
   list.innerHTML = '';
   $('#empty').classList.toggle('hidden', books.length > 0);
-  $('#subtitle').textContent = books.length ? `${books.length} ${books.length === 1 ? 'libro' : 'libros'}` : '';
+  const st = streak();
+  $('#subtitle').textContent = books.length ? `${books.length} ${books.length === 1 ? 'libro' : 'libros'}` +
+    (st >= 2 ? ` · 🔥 ${st} días seguidos` : '') : '';
   for (const b of books) {
     const pct = b.duration ? Math.min(100, b.pos / b.duration * 100) : 0;
     const el = document.createElement('div');
     el.className = 'card';
-    el.innerHTML = `<div class="cover" style="background:${colorOf(b.id)}">${initial(b.title)}</div>
+    el.innerHTML = `<div class="cover"></div>
       <div class="info"><div class="t"></div><div class="a"></div>
       <div class="bar"><i style="width:${pct}%"></i></div><div class="m"></div></div>
       <button class="more" aria-label="Opciones del libro">⋮</button>`;
+    paintCover(el.querySelector('.cover'), b);
     el.querySelector('.t').textContent = b.title;
     el.querySelector('.a').textContent = b.artist || '';
     el.querySelector('.m').textContent = pct >= 99 ? 'Terminado' :
@@ -350,6 +415,7 @@ function renderLibrary() {
 function libraryMenu(b) {
   sheet(b.title.length > 40 ? b.title.slice(0, 40) + '…' : b.title, body => {
     body.append(
+      row(`Apuntes (${notesOf(b).length})`, () => openNotes(b)),
       row('Renombrar', () => { closeSheet(); renameBook(b); }),
       row('Marcar como no escuchado', async () => { b.pos = 0; await dbPut('books', b); if (cur && cur.id === b.id) audio.currentTime = 0; closeSheet(); renderLibrary(); }),
       row('Eliminar de la app', () => { closeSheet(); deleteBook(b); }, 'danger'));
@@ -370,6 +436,7 @@ async function deleteBook(b) {
     const ok = document.createElement('button'); ok.className = 'primary'; ok.style.background = 'var(--danger)'; ok.style.color = '#fff'; ok.textContent = 'Eliminar';
     ok.onclick = async () => {
       if (cur && cur.id === b.id) unloadBook();
+      if (coverUrls.has(b.id)) { URL.revokeObjectURL(coverUrls.get(b.id)); coverUrls.delete(b.id); }
       await dbDel('books', b.id); await dbDel('blobs', b.id);
       closeSheet(); loadLibrary();
     };
@@ -389,8 +456,10 @@ $('#file').onchange = async e => {
       const id = crypto.randomUUID();
       const title = meta.title || f.name.replace(/\.[^.]+$/, '');
       await dbPut('blobs', {id, blob: f});
-      await dbPut('books', {id, title, artist: meta.artist, duration, chapters: meta.chapters,
-        pos: 0, speed: 1, marks: [], added: Date.now(), lastPlayed: 0, size: f.size});
+      const book = {id, title, artist: meta.artist, duration, chapters: meta.chapters, cover: meta.cover,
+        pos: 0, speed: 1, marks: [], notes: [], added: Date.now(), lastPlayed: 0, size: f.size};
+      applyPendingRestore(book);
+      await dbPut('books', book);
     } catch (err) {
       console.error(err); toast('No se pudo importar ' + f.name + '. ¿Poco espacio libre?', 5000); continue;
     }
@@ -421,6 +490,7 @@ async function openBook(id, show) {
   await savePos(true);
   unloadBook();
   showAwayPill(book);
+  const resumeFrom = book.lastPlayed;
   cur = book; cur.marks = cur.marks || [];
   curUrl = URL.createObjectURL(rec.blob);
   audio.src = curUrl;
@@ -428,6 +498,7 @@ async function openBook(id, show) {
   audio.addEventListener('loadedmetadata', function f() {
     audio.removeEventListener('loadedmetadata', f);
     audio.currentTime = Math.min(cur.pos || 0, (audio.duration || 1e9) - 1);
+    pausedAt = resumeFrom || 0; pausedPos = audio.currentTime;
     if (!cur.duration && isFinite(audio.duration)) cur.duration = audio.duration;
     audio.playbackRate = cur.speed || 1;
     updateUI();
@@ -475,10 +546,47 @@ $('#fwd').onclick = () => skip(30);
 $('#prevCh').onclick = () => gotoChapter(-1);
 $('#nextCh').onclick = () => gotoChapter(1);
 
-audio.addEventListener('play', () => { updatePlayIcons(); if (window.speechSynthesis && speaking) stopSpeaking(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; });
-audio.addEventListener('pause', () => { updatePlayIcons(); savePos(true); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; });
+audio.addEventListener('play', () => { autoRewind(); statTick = 0; updatePlayIcons(); if (window.speechSynthesis && speaking) stopSpeaking(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; });
+audio.addEventListener('pause', () => { pausedAt = Date.now(); pausedPos = audio.currentTime; trackListening(); saveStats(); updatePlayIcons(); savePos(true); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; });
 audio.addEventListener('ended', async () => { if (cur) { cur.pos = audio.duration; await savePos(true); } updatePlayIcons(); });
-audio.addEventListener('timeupdate', () => { updateProgress(); savePos(false); checkSleepChapter(); });
+audio.addEventListener('timeupdate', () => { updateProgress(); trackListening(); savePos(false); checkSleepChapter(); });
+
+/* retroceso automático: al reanudar tras una pausa vuelve unos segundos para retomar el hilo */
+let pausedAt = 0, pausedPos = -1;
+function autoRewind() {
+  const gap = (Date.now() - pausedAt) / 1000, moved = Math.abs(audio.currentTime - pausedPos) > 1;
+  const was = pausedAt; pausedAt = 0;
+  if (!cur || !was || moved) return;                  // si has movido la posición, se respeta
+  const back = gap < 15 ? 0 : gap < 300 ? 5 : gap < 3600 ? 10 : gap < 86400 ? 20 : 30;
+  if (!back) return;
+  const i = chapterIndex(audio.currentTime), start = i >= 0 ? chapters()[i].start : 0;
+  const t = Math.max(start, audio.currentTime - back), d = Math.round(audio.currentTime - t);
+  if (d < 1) return;
+  audio.currentTime = t; pausedPos = t;
+  toast(`↺ ${d} s atrás para retomar el hilo`, 1800);
+}
+
+/* estadísticas de escucha: segundos reales escuchados por día (no posición) */
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+let stats = (() => { try { return JSON.parse(localStorage.getItem('stats')) || {days: {}}; } catch { return {days: {}}; } })();
+let statTick = 0, statDirty = 0;
+function trackListening() {
+  const now = Date.now();
+  if (cur && statTick && now - statTick < 5000) {
+    const dt = (now - statTick) / 1000, k = dayKey();
+    stats.days[k] = (stats.days[k] || 0) + dt;
+    cur.listened = (cur.listened || 0) + dt;
+    if ((statDirty += dt) > 15) saveStats();
+  }
+  statTick = audio.paused ? 0 : now;
+}
+function saveStats() { statDirty = 0; try { localStorage.setItem('stats', JSON.stringify(stats)); } catch {} }
+function streak() {
+  const d = new Date(); let n = 0;
+  if ((stats.days[dayKey(d)] || 0) < 60) d.setDate(d.getDate() - 1);   // hoy aún no cuenta: la racha sigue viva
+  while ((stats.days[dayKey(d)] || 0) >= 60) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
 audio.addEventListener('error', () => toast('Error al reproducir el audio'));
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(true); });
 window.addEventListener('pagehide', () => savePos(true));
@@ -512,9 +620,7 @@ function updateUI() {
   $('#pBook').textContent = chap ? cur.title : (cur.artist || '');
   $('#miniTitle').textContent = cur.title;
   $('#miniChap').textContent = chap || cur.artist || '';
-  for (const id of ['#bigcover', '#miniCover']) {
-    const el = $(id); el.textContent = initial(cur.title); el.style.background = colorOf(cur.id);
-  }
+  for (const id of ['#bigcover', '#miniCover']) paintCover($(id), cur);
   $('#speedLbl').textContent = (cur.speed || 1) + '×';
   $('#chapBtn').style.display = chapters() ? '' : 'none';
   $('#prevCh').style.visibility = $('#nextCh').style.visibility = 'visible';
@@ -545,7 +651,8 @@ function updateMediaSession() {
     title: i >= 0 ? chapters()[i].title : cur.title,
     artist: cur.artist || 'Audiolibro',
     album: cur.title,
-    artwork: [{src: 'icon-512.png', sizes: '512x512', type: 'image/png'}]
+    artwork: cur.cover && coverUrls.get(cur.id) ? [{src: coverUrls.get(cur.id), type: cur.cover.type}]
+      : [{src: 'icon-512.png', sizes: '512x512', type: 'image/png'}]
   });
 }
 if ('mediaSession' in navigator) {
@@ -605,27 +712,72 @@ $('#chapBtn').onclick = () => {
   });
 };
 
-/* marcadores */
-$('#markBtn').onclick = () => {
+/* marcadores (con nota escrita o dictada) */
+$('#markBtn').onclick = () => openMarks();
+function openMarks() {
   sheet('Marcadores', body => {
     const add = document.createElement('button'); add.className = 'primary';
     add.textContent = 'Añadir marcador aquí · ' + fmt(audio.currentTime);
-    add.onclick = async () => {
+    add.onclick = () => {
       const i = chapterIndex(audio.currentTime);
-      cur.marks.push({t: audio.currentTime, chapter: i >= 0 ? chapters()[i].title : '', date: Date.now()});
-      cur.marks.sort((a, b) => a.t - b.t); await dbPut('books', cur);
-      toast('Marcador añadido'); $('#markBtn').click();
+      markForm({t: audio.currentTime, chapter: i >= 0 ? chapters()[i].title : '', date: Date.now(), note: ''}, true);
     };
     body.append(add);
-    if (!cur.marks.length) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = 'Aún no hay marcadores. Úsalos para volver a una idea importante.'; body.append(h); }
+    if (!cur.marks.length) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = 'Aún no hay marcadores. Úsalos para volver a una idea importante y apuntar qué te pareció.'; body.append(h); }
     cur.marks.forEach((m, k) => {
-      const r = row(m.chapter || 'Marcador ' + (k + 1), () => { audio.currentTime = m.t; closeSheet(); }, '', fmt(m.t));
-      const x = document.createElement('span'); x.className = 'x'; x.textContent = '✕'; x.setAttribute('aria-label', 'Borrar marcador');
-      x.onclick = async e => { e.stopPropagation(); cur.marks.splice(k, 1); await dbPut('books', cur); $('#markBtn').click(); };
-      r.append(x); body.append(r);
+      const r = document.createElement('div'); r.className = 'mark';
+      const go = document.createElement('button'); go.className = 'go';
+      const a = document.createElement('span'); a.textContent = m.note || m.chapter || 'Marcador ' + (k + 1);
+      const b = document.createElement('small'); b.textContent = (m.note && m.chapter ? m.chapter + ' · ' : '') + fmt(m.t);
+      go.append(a, b); go.onclick = () => { audio.currentTime = m.t; closeSheet(); };
+      const ed = document.createElement('button'); ed.className = 'x'; ed.textContent = '✎'; ed.setAttribute('aria-label', 'Editar nota');
+      ed.onclick = () => markForm(m, false);
+      const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.setAttribute('aria-label', 'Borrar marcador');
+      x.onclick = async () => { cur.marks.splice(k, 1); await dbPut('books', cur); openMarks(); };
+      r.append(go, ed, x); body.append(r);
     });
   });
-};
+}
+function markForm(m, isNew) {
+  sheet(isNew ? 'Nuevo marcador · ' + fmt(m.t) : 'Nota del marcador', body => {
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = (m.chapter ? m.chapter + ' · ' : '') + fmt(m.t) + '. Escribe o dicta qué quieres recordar (opcional).';
+    const {field, input} = textField('Ej.: usar esto con pacientes ambivalentes', m.note);
+    const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = isNew ? 'Guardar marcador' : 'Guardar nota';
+    ok.onclick = async () => {
+      m.note = input.value.trim();
+      if (isNew) cur.marks.push(m);
+      cur.marks.sort((a, b) => a.t - b.t); await dbPut('books', cur);
+      toast(isNew ? 'Marcador añadido' : 'Nota guardada'); openMarks();
+    };
+    body.append(h, field, ok);
+  });
+}
+
+/* campo de texto con botón para dictar (reconocimiento de voz del móvil) */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ICON_MIC = '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+function textField(placeholder, value = '') {
+  const field = document.createElement('div'); field.className = 'field';
+  const input = document.createElement('textarea'); input.placeholder = placeholder; input.value = value || '';
+  field.append(input);
+  if (SpeechRec) {
+    const mic = document.createElement('button'); mic.className = 'mic'; mic.innerHTML = ICON_MIC; mic.setAttribute('aria-label', 'Dictar');
+    let rec = null;
+    mic.onclick = () => {
+      if (rec) return rec.stop();
+      audio.pause();                                   // si no, el micro oiría el libro
+      rec = new SpeechRec(); rec.lang = 'es-ES'; rec.interimResults = true;
+      const base = input.value.trim() ? input.value.trim() + ' ' : '';
+      rec.onresult = e => { input.value = base + [...e.results].map(x => x[0].transcript).join(''); };
+      rec.onerror = e => { if (e.error === 'not-allowed') toast('Permite el micrófono para poder dictar'); };
+      rec.onend = () => { rec = null; mic.classList.remove('on'); };
+      mic.classList.add('on'); rec.start();
+    };
+    field.append(mic);
+  }
+  return {field, input};
+}
 
 /* temporizador de sueño */
 let sleepAt = 0, sleepChapter = false, sleepTick = null;
@@ -838,12 +990,13 @@ async function listModels(key) {
   try { localStorage.setItem('geminiModels', JSON.stringify({at: Date.now(), list})); } catch {}
   return list;
 }
-async function askGemini(key, b64, mime, prompt, onStatus) {
+const RECAP_SCHEMA = {type: 'OBJECT', required: ['donde', 'temas', 'ultima'],
+  properties: {donde: {type: 'STRING'}, temas: {type: 'ARRAY', items: {type: 'STRING'}}, ultima: {type: 'STRING'}}};
+const ANSWER_SCHEMA = {type: 'OBJECT', required: ['respuesta'], properties: {respuesta: {type: 'STRING'}}};
+async function askGemini(key, b64, mime, prompt, onStatus, schema) {
   const body = {
     contents: [{role: 'user', parts: [{inline_data: {mime_type: mime, data: b64}}, {text: prompt}]}],
-    generationConfig: {responseMimeType: 'application/json', responseSchema: {type: 'OBJECT',
-      properties: {donde: {type: 'STRING'}, temas: {type: 'ARRAY', items: {type: 'STRING'}}, ultima: {type: 'STRING'}},
-      required: ['donde', 'temas', 'ultima']}}
+    generationConfig: {responseMimeType: 'application/json', responseSchema: schema}
   };
   const payload = JSON.stringify(body), models = await listModels(key), log = [];
   let quota = '', busy = false, slow = false;
@@ -893,33 +1046,70 @@ async function makeRecap(min, onStatus) {
     `Cíñete a lo que se oye en el audio; no inventes.`;
   const b64 = await toBase64(blob);
   onStatus('Gemini está escuchando el tramo y resumiendo… suele tardar entre 10 y 40 segundos.');
-  const data = await askGemini(getKey(), b64, mime, prompt, onStatus);
+  const data = await askGemini(getKey(), b64, mime, prompt, onStatus, RECAP_SCHEMA);
   cur.recap = {pos: t1, min, chapter: chap, date: Date.now(), data};
-  await dbPut('books', cur);
+  await addNote({type: 'recap', ...cur.recap});
   return cur.recap;
 }
 
-function recapCard(r, title) {
+/* ---------- apuntes: cada resumen y cada pregunta se guardan por libro ---------- */
+function notesOf(b) {
+  if (!b.notes) b.notes = b.recap ? [{type: 'recap', ...b.recap}] : [];
+  return b.notes;
+}
+async function addNote(n) {
+  const ns = notesOf(cur);
+  if (n.type === 'recap') {                          // rehacer el mismo punto sustituye al anterior
+    const k = ns.findIndex(x => x.type === 'recap' && Math.abs(x.pos - n.pos) < 90);
+    if (k >= 0) ns.splice(k, 1);
+  }
+  ns.push(n); ns.sort((a, b) => a.pos - b.pos);
+  await dbPut('books', cur);
+}
+function speechParts(n) {
+  if (n.type === 'qa') return [n.q, ...(n.a.match(/[^.!?]+[.!?]*/g) || [n.a])];
+  if (n.type === 'mark') return [n.note];
+  return [n.data.donde, ...(n.data.temas || []), 'Lo dejaste en: ' + n.data.ultima];
+}
+function pillBtn(html, label, fn, cls = '') {
+  const b = document.createElement('button'); b.className = 'listen ' + cls; b.innerHTML = `${html}<span></span>`;
+  b.querySelector('span').textContent = label; b.onclick = fn; return b;
+}
+function noteCard(n, {title, jump, del} = {}) {
   const box = document.createElement('div'); box.className = 'recap';
   if (title) { const h = document.createElement('div'); h.className = 'hint'; h.style.padding = '0 0 8px'; h.textContent = title; box.append(h); }
-  const lead = document.createElement('p'); lead.className = 'lead'; lead.textContent = r.data.donde;
-  const ul = document.createElement('ul');
-  for (const t of r.data.temas || []) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
-  const last = document.createElement('p'); last.className = 'last';
-  const b = document.createElement('b'); b.textContent = 'Lo dejaste en'; last.append(b, r.data.ultima);
-  const meta = document.createElement('p'); meta.className = 'meta';
-  meta.textContent = `${r.chapter ? r.chapter + ' · ' : ''}${fmt(r.pos)} · últimos ${r.min} min · ${ago(Date.now() - r.date)}`;
-  box.append(lead, ul, last, meta);
-  if ('speechSynthesis' in window) {
-    const btn = document.createElement('button'); btn.className = 'listen';
-    const idle = () => btn.innerHTML = `${ICON_SPEAK}<span>Escuchar resumen</span>`;
-    idle(); btn.onclick = () => speakRecap(r, btn, idle);
-    box.append(btn);
+  if (n.type === 'qa') {
+    const q = document.createElement('p'); q.className = 'q'; q.textContent = n.q;
+    const a = document.createElement('p'); a.className = 'a'; a.textContent = n.a;
+    box.append(q, a);
+  } else if (n.type === 'mark') {
+    const a = document.createElement('p'); a.className = 'a'; a.textContent = '🔖 ' + n.note; box.append(a);
+  } else {
+    const lead = document.createElement('p'); lead.className = 'lead'; lead.textContent = n.data.donde;
+    const ul = document.createElement('ul');
+    for (const t of n.data.temas || []) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
+    const last = document.createElement('p'); last.className = 'last';
+    const b = document.createElement('b'); b.textContent = 'Lo dejaste en'; last.append(b, n.data.ultima);
+    box.append(lead, ul, last);
   }
+  const meta = document.createElement('p'); meta.className = 'meta' + (jump ? ' go' : '');
+  meta.textContent = `${n.chapter ? n.chapter + ' · ' : ''}${fmt(n.pos)}${n.min ? ` · últimos ${n.min} min` : ''}${n.date ? ' · ' + ago(Date.now() - n.date) : ''}${jump ? ' · ir aquí' : ''}`;
+  if (jump) meta.onclick = () => { audio.currentTime = n.pos; closeSheet(); };
+  box.append(meta);
+  const acts = document.createElement('div'); acts.className = 'acts';
+  if ('speechSynthesis' in window) {
+    const btn = pillBtn(ICON_SPEAK, n.type === 'qa' ? 'Escuchar respuesta' : n.type === 'mark' ? 'Escuchar' : 'Escuchar resumen', null);
+    const idle = () => { btn.innerHTML = ICON_SPEAK + '<span></span>'; btn.querySelector('span').textContent = n.type === 'qa' ? 'Escuchar respuesta' : n.type === 'mark' ? 'Escuchar' : 'Escuchar resumen'; };
+    btn.onclick = () => speakParts(speechParts(n), btn, idle);
+    acts.append(btn);
+  }
+  if (del) acts.append(pillBtn('', 'Borrar', del, 'danger'));
+  if (acts.children.length) box.append(acts);
   return box;
 }
+const recapCard = (r, title) => noteCard({type: 'recap', ...r}, {title});
 
-/* lectura en voz alta del resumen, con la voz del propio móvil (gratis y sin conexión) */
+/* lectura en voz alta, con la voz del propio móvil (gratis y sin conexión) */
 const ICON_SPEAK = '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>';
 const ICON_STOP = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>';
 let speaking = null;                          // {btn, idle} del botón que está hablando
@@ -927,7 +1117,7 @@ function stopSpeaking() {
   try { speechSynthesis.cancel(); } catch {}
   if (speaking) { speaking.idle(); speaking = null; }
 }
-function speakRecap(r, btn, idle) {
+function speakParts(parts, btn, idle) {
   const ss = window.speechSynthesis;
   const was = speaking?.btn === btn;
   stopSpeaking();
@@ -936,7 +1126,7 @@ function speakRecap(r, btn, idle) {
   const voices = ss.getVoices().filter(v => /^es/i.test(v.lang));
   const voice = voices.find(v => /es[-_]ES/i.test(v.lang) && v.localService) || voices.find(v => /es[-_]ES/i.test(v.lang)) || voices[0] || null;
   // una frase por locución: algunos móviles cortan las locuciones largas
-  const parts = [r.data.donde, ...(r.data.temas || []), 'Lo dejaste en: ' + r.data.ultima].filter(Boolean);
+  parts = parts.map(t => (t || '').trim()).filter(Boolean);
   const done = () => { if (speaking?.btn === btn) { speaking = null; idle(); } };
   parts.forEach((t, k) => {
     const u = new SpeechSynthesisUtterance(t);
@@ -945,9 +1135,64 @@ function speakRecap(r, btn, idle) {
     if (k === parts.length - 1) u.onend = done;
     ss.speak(u);
   });
-  speaking = {btn, idle}; btn.innerHTML = `${ICON_STOP}<span>Parar</span>`;
+  speaking = {btn, idle}; btn.innerHTML = ICON_STOP + '<span>Parar</span>';
 }
 if ('speechSynthesis' in window) { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); }
+
+/* hoja de apuntes: por capítulos, con copiar / compartir */
+function noteItems(b) {
+  const marks = (b.marks || []).filter(m => m.note).map(m => ({type: 'mark', pos: m.t, chapter: m.chapter, note: m.note, date: m.date, ref: m}));
+  return [...notesOf(b), ...marks].sort((x, y) => x.pos - y.pos);
+}
+function notesText(b) {
+  const out = [`Apuntes de «${b.title}»${b.artist ? ' — ' + b.artist : ''}`, `Exportado el ${new Date().toLocaleDateString('es')}`, ''];
+  let ch = null;
+  for (const n of noteItems(b)) {
+    if (n.chapter !== ch) { ch = n.chapter; out.push('', `== ${ch || 'Sin capítulo'} ==`); }
+    if (n.type === 'qa') out.push(`[${fmt(n.pos)}] Pregunta: ${n.q}`, `   ${n.a}`);
+    else if (n.type === 'mark') out.push(`[${fmt(n.pos)}] Marcador: ${n.note}`);
+    else out.push(`[${fmt(n.pos)}] ${n.data.donde}`, ...(n.data.temas || []).map(t => `   • ${t}`), `   → Lo dejaste en: ${n.data.ultima}`);
+  }
+  return out.join('\n');
+}
+function download(name, data, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], {type})); a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+function openNotes(b = cur) {
+  const items = noteItems(b);
+  sheet(`Apuntes (${items.length})`, body => {
+    if (!items.length) {
+      const h = document.createElement('div'); h.className = 'hint';
+      h.textContent = 'Aún no hay apuntes. Cada resumen y cada pregunta que hagas se guardan aquí, ordenados por capítulo, junto con los marcadores que tengan nota.';
+      return body.append(h);
+    }
+    const acts = document.createElement('div'); acts.className = 'chips';
+    const copy = document.createElement('button'); copy.className = 'chip'; copy.textContent = 'Copiar todo';
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(notesText(b)); toast('Apuntes copiados'); } catch { toast('No se pudo copiar'); } };
+    const share = document.createElement('button'); share.className = 'chip'; share.textContent = navigator.share ? 'Compartir' : 'Descargar .txt';
+    share.onclick = async () => {
+      const text = notesText(b);
+      if (navigator.share) { try { await navigator.share({title: 'Apuntes · ' + b.title, text}); } catch {} }
+      else download(`Apuntes - ${b.title.slice(0, 60)}.txt`, text, 'text/plain');
+    };
+    acts.append(copy, share); body.append(acts);
+    let ch = null;
+    for (const n of items) {
+      if (n.chapter !== ch) { ch = n.chapter; const h = document.createElement('div'); h.className = 'chaph'; h.textContent = ch || 'Sin capítulo'; body.append(h); }
+      body.append(noteCard(n, {
+        jump: cur && cur.id === b.id,
+        del: async () => {
+          if (n.type === 'mark') n.ref.note = ''; else b.notes.splice(b.notes.indexOf(n), 1);
+          await dbPut('books', b); openNotes(b);
+        }
+      }));
+    }
+  });
+}
+
 function keyForm(body, after) {
   const h = document.createElement('div'); h.className = 'hint';
   h.innerHTML = 'Para resumir, la app manda el trozo de audio a Google Gemini, que lo escucha y lo resume. ' +
@@ -959,6 +1204,43 @@ function keyForm(body, after) {
   ok.onclick = () => { const k = i.value.trim(); if (!k) return toast('Pega la clave primero'); setKey(k); toast('Clave guardada'); after(); };
   body.append(h, i, ok);
 }
+
+/* ejecuta una petición a Gemini mostrando el progreso y, si falla, el motivo */
+async function runGemini(body, task, onDone, retry) {
+  if (recapBusy) return;
+  recapBusy = true;
+  const wasPlaying = !audio.paused; audio.pause();
+  body.innerHTML = '<div class="busy"><i></i><span></span></div>';
+  const status = body.querySelector('.busy span');
+  try {
+    const res = await task(t => status.textContent = t);
+    if (!$('#sheet')) return;
+    body.innerHTML = ''; onDone(res);
+  } catch (e) {
+    console.error(e);
+    if (!$('#sheet')) return;
+    body.innerHTML = '';
+    const h = document.createElement('div'); h.className = 'hint'; h.style.color = 'var(--danger)';
+    h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' :
+      e instanceof TypeError ? 'No hay conexión a internet (o Gemini no responde). Esta función necesita conexión.' : 'No se pudo completar: ' + e.message;
+    body.append(h);
+    if (e.details?.length) {
+      const d = document.createElement('details'); d.className = 'why';
+      const sm = document.createElement('summary'); sm.textContent = 'Ver qué respondió cada modelo';
+      const ul = document.createElement('ul');
+      for (const t of e.details) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
+      d.append(sm, ul); body.append(d);
+    }
+    if (e.badKey) keyForm(body, retry); else body.append(row('Reintentar', retry));
+    if (wasPlaying) audio.play().catch(() => {});
+  } finally { recapBusy = false; }
+}
+function continueBtn() {
+  const cont = document.createElement('button'); cont.className = 'primary'; cont.textContent = 'Seguir escuchando';
+  cont.onclick = () => { closeSheet(); audio.play().catch(() => {}); };
+  return cont;
+}
+
 function openRecap() {
   if (!cur) return;
   $('#awayPill').classList.add('hidden');
@@ -975,38 +1257,7 @@ function openRecap() {
       wrap.append(c);
     }
     label();
-    go.onclick = async () => {
-      if (recapBusy) return;
-      recapBusy = true;
-      const wasPlaying = !audio.paused; audio.pause();
-      body.innerHTML = '<div class="busy"><i></i><span></span></div>';
-      const status = body.querySelector('.busy span');
-      try {
-        const res = await makeRecap(recapSpan, t => status.textContent = t);
-        if (!$('#sheet')) return;
-        body.innerHTML = ''; body.append(recapCard(res));
-        const cont = document.createElement('button'); cont.className = 'primary'; cont.textContent = 'Seguir escuchando';
-        cont.onclick = () => { closeSheet(); audio.play().catch(() => {}); };
-        body.append(cont);
-      } catch (e) {
-        console.error(e);
-        if (!$('#sheet')) return;
-        body.innerHTML = '';
-        const h = document.createElement('div'); h.className = 'hint'; h.style.color = 'var(--danger)';
-        h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' :
-          e instanceof TypeError ? 'No hay conexión a internet (o Gemini no responde). El resumen necesita conexión.' : 'No se pudo resumir: ' + e.message;
-        body.append(h);
-        if (e.details?.length) {
-          const d = document.createElement('details'); d.className = 'why';
-          const sm = document.createElement('summary'); sm.textContent = 'Ver qué respondió cada modelo';
-          const ul = document.createElement('ul');
-          for (const t of e.details) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
-          d.append(sm, ul); body.append(d);
-        }
-        if (e.badKey) keyForm(body, openRecap); else body.append(row('Reintentar', openRecap));
-        if (wasPlaying) audio.play().catch(() => {});
-      } finally { recapBusy = false; }
-    };
+    go.onclick = () => runGemini(body, st => makeRecap(recapSpan, st), res => body.append(recapCard(res), continueBtn()), openRecap);
     body.append(wrap, go);
     if (!r && 'speechSynthesis' in window) {
       const h = document.createElement('div'); h.className = 'hint';
@@ -1014,9 +1265,154 @@ function openRecap() {
       body.append(h);
     }
     if (r && !fresh) body.append(recapCard(r, 'Resumen anterior'));
-    body.append(row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
+    body.append(row('Preguntar al libro', openAsk), row(`Apuntes del libro (${noteItems(cur).length})`, () => openNotes(cur)),
+      row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
   });
 }
+
+/* ---------- preguntar al libro ---------- */
+const ASK_MINUTES = 5;
+async function askBook(question, onStatus) {
+  onStatus('Preparando el audio…');
+  const t1 = audio.currentTime, t0 = Math.max(0, t1 - ASK_MINUTES * 60);
+  const i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
+  const {blob, mime} = await extractAudio(t0, t1);
+  const b64 = await toBase64(blob);
+  const ctx = notesOf(cur).filter(n => n.type === 'recap' && n.pos <= t1 + 5).slice(-2).map(n => n.data.donde).join(' ');
+  const prompt = `Alguien está escuchando el audiolibro «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}${chap ? `, en «${chap}»` : ''}. ` +
+    `El audio adjunto son los últimos ${Math.round((t1 - t0) / 60)} minutos que ha escuchado.\n` +
+    (ctx ? `Contexto de resúmenes anteriores: ${ctx}\n` : '') +
+    `Su pregunta: «${question}»\n` +
+    `Responde en español, claro y directo, en un máximo de unas 150 palabras y sin formato markdown. ` +
+    `Básate en el audio; si hace falta, completa con conocimiento general del tema y dilo. Si la respuesta no está en el audio, indícalo.`;
+  onStatus('Gemini está escuchando y pensando la respuesta…');
+  const data = await askGemini(getKey(), b64, mime, prompt, onStatus, ANSWER_SCHEMA);
+  const note = {type: 'qa', pos: t1, chapter: chap, date: Date.now(), q: question, a: data.respuesta, min: ASK_MINUTES};
+  await addNote(note);
+  return note;
+}
+function openAsk() {
+  if (!cur) return;
+  if (!getKey()) return sheet('Preguntar al libro', b => keyForm(b, openAsk));
+  sheet('Preguntar al libro', body => {
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = `Pregunta sobre lo que acabas de oír. Gemini escucha los últimos ${ASK_MINUTES} minutos y te responde; la respuesta se guarda en tus apuntes.`;
+    const {field, input} = textField('Escribe o dicta tu pregunta…');
+    const sug = document.createElement('div'); sug.className = 'chips';
+    for (const t of ['Explícamelo más sencillo', 'Ponme un ejemplo práctico', '¿Cuál es la idea principal?', '¿Qué significa este concepto?']) {
+      const c = document.createElement('button'); c.className = 'chip'; c.textContent = t;
+      c.onclick = () => { input.value = t; input.focus(); };
+      sug.append(c);
+    }
+    const go = document.createElement('button'); go.className = 'primary'; go.textContent = 'Preguntar';
+    go.onclick = () => {
+      const q = input.value.trim(); if (!q) return toast('Escribe o dicta una pregunta');
+      runGemini(body, st => askBook(q, st), n => {
+        body.append(noteCard(n));
+        const again = document.createElement('button'); again.className = 'primary'; again.style.background = 'var(--surface2)'; again.style.color = 'var(--text)';
+        again.textContent = 'Hacer otra pregunta'; again.onclick = openAsk;
+        body.append(again, continueBtn());
+      }, openAsk);
+    };
+    body.append(h, field, sug, go);
+    const prev = notesOf(cur).filter(n => n.type === 'qa').slice(-3).reverse();
+    if (prev.length) { const t = document.createElement('div'); t.className = 'chaph'; t.textContent = 'Preguntas recientes'; body.append(t); prev.forEach(n => body.append(noteCard(n))); }
+  });
+}
+
+/* ---------- menú de la biblioteca: estadísticas y copia de seguridad ---------- */
+$('#moreBtn').onclick = () => sheet('Más opciones', body => body.append(
+  row('Estadísticas de escucha', openStats),
+  row('Guardar copia de seguridad', exportBackup),
+  row('Recuperar copia de seguridad', () => $('#restoreFile').click()),
+  row('Clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, closeSheet)))));
+
+function openStats() {
+  trackListening(); saveStats();
+  const today = stats.days[dayKey()] || 0;
+  let week = 0, total = 0;
+  const days = [];
+  for (let k = 6; k >= 0; k--) { const d = new Date(); d.setDate(d.getDate() - k); const v = stats.days[dayKey(d)] || 0; week += v; days.push([d, v]); }
+  for (const v of Object.values(stats.days)) total += v;
+  sheet('Estadísticas', body => {
+    const g = document.createElement('div'); g.className = 'stats';
+    for (const [v, l] of [[human(today), 'hoy'], [streak() + (streak() === 1 ? ' día' : ' días'), 'racha'], [human(week), 'esta semana']]) {
+      const s = document.createElement('div'); s.className = 'stat';
+      const b = document.createElement('b'); b.textContent = v; const sp = document.createElement('span'); sp.textContent = l;
+      s.append(b, sp); g.append(s);
+    }
+    const max = Math.max(60, ...days.map(d => d[1]));
+    const wk = document.createElement('div'); wk.className = 'week';
+    days.forEach(([d, v], k) => {
+      const c = document.createElement('div'); if (k === 6) c.className = 'today';
+      const bar = document.createElement('i'); bar.style.height = Math.max(3, v / max * 90) + 'px';
+      bar.title = human(v);
+      const l = document.createElement('span'); l.textContent = 'DLMXJVS'[d.getDay()];
+      c.append(bar, l); wk.append(c);
+    });
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = `En total has escuchado ${human(total)}. La racha cuenta los días seguidos con al menos 1 minuto.`;
+    body.append(g, wk, h);
+    const per = books.filter(b => b.listened > 30).sort((a, b) => b.listened - a.listened);
+    if (per.length) {
+      const t = document.createElement('div'); t.className = 'chaph'; t.textContent = 'Por libro'; body.append(t);
+      per.forEach(b => body.append(row(b.title.length > 34 ? b.title.slice(0, 34) + '…' : b.title, () => {}, '', human(b.listened))));
+    }
+  });
+}
+
+/* copia de seguridad: progreso, marcadores, apuntes y estadísticas (sin el audio ni la clave) */
+async function exportBackup() {
+  if (cur) await savePos(true);
+  saveStats();
+  const bs = await dbAll('books');
+  const data = {app: 'audiolibros', version: 1, date: Date.now(), stats, books: bs.map(({cover, ...b}) => b)};
+  download(`audiolibros-copia-${dayKey()}.json`, JSON.stringify(data), 'application/json');
+  closeSheet(); toast('Copia guardada en Descargas', 3500);
+}
+const uniqBy = (arr, key) => { const seen = new Set(); return arr.filter(x => { const k = key(x); if (seen.has(k)) return false; seen.add(k); return true; }); };
+function mergeBook(lb, sb) {
+  if ((sb.lastPlayed || 0) > (lb.lastPlayed || 0)) { lb.pos = sb.pos; lb.lastPlayed = sb.lastPlayed; lb.speed = sb.speed || lb.speed; }
+  lb.marks = uniqBy([...(lb.marks || []), ...(sb.marks || [])], m => Math.round(m.t) + '|' + (m.note || '')).sort((a, b) => a.t - b.t);
+  lb.notes = uniqBy([...notesOf(lb), ...notesOf({...sb})], n => n.type + '|' + Math.round(n.pos) + '|' + (n.date || 0)).sort((a, b) => a.pos - b.pos);
+  if (sb.recap && (!lb.recap || sb.recap.date > lb.recap.date)) lb.recap = sb.recap;
+  lb.listened = Math.max(lb.listened || 0, sb.listened || 0);
+}
+const getPending = () => { try { return JSON.parse(localStorage.getItem('pendingRestore')) || []; } catch { return []; } };
+const setPending = p => { try { p.length ? localStorage.setItem('pendingRestore', JSON.stringify(p)) : localStorage.removeItem('pendingRestore'); } catch {} };
+function applyPendingRestore(book) {           // libro de la copia cuyo audio se añade después
+  const p = getPending(), k = p.findIndex(sb => sb.size === book.size && sb.title === book.title) >= 0
+    ? p.findIndex(sb => sb.size === book.size && sb.title === book.title) : p.findIndex(sb => sb.size === book.size);
+  if (k < 0) return;
+  mergeBook(book, p[k]); p.splice(k, 1); setPending(p);
+}
+$('#restoreFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (data.app !== 'audiolibros' || !Array.isArray(data.books)) throw new Error('formato');
+    for (const [k, v] of Object.entries(data.stats?.days || {})) stats.days[k] = Math.max(stats.days[k] || 0, v);
+    saveStats();
+    if (cur) await savePos(true);
+    const local = await dbAll('books'), pending = getPending();
+    let merged = 0;
+    for (const sb of data.books) {
+      const lb = local.find(b => b.id === sb.id) || local.find(b => b.size === sb.size && b.title === sb.title) || local.find(b => b.size === sb.size);
+      if (!lb) { pending.push(sb); continue; }
+      mergeBook(lb, sb); await dbPut('books', lb); merged++;
+      if (cur && cur.id === lb.id) {
+        Object.assign(cur, {marks: lb.marks, notes: lb.notes, recap: lb.recap, listened: lb.listened, speed: lb.speed, lastPlayed: lb.lastPlayed});
+        if (audio.paused && Math.abs(cur.pos - lb.pos) > 1) { cur.pos = lb.pos; audio.currentTime = lb.pos; }
+      }
+    }
+    setPending(uniqBy(pending, sb => sb.size + '|' + sb.title));
+    closeSheet();
+    toast(`Copia recuperada: ${merged} ${merged === 1 ? 'libro' : 'libros'}` + (data.books.length - merged === 1 ? '. El otro se aplicará cuando añadas su audio.' :
+      data.books.length - merged ? `. Los otros ${data.books.length - merged} se aplicarán cuando añadas su audio.` : ''), 5000);
+    loadLibrary(); if (cur) updateUI();
+  } catch (err) { console.error(err); toast('Ese archivo no es una copia de seguridad válida', 4000); }
+};
 $('#recapBtn').onclick = openRecap;
 $('#awayPill').onclick = openRecap;
 
