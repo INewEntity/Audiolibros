@@ -47,6 +47,7 @@ header.top p{margin:4px 0 0;color:var(--muted);font-size:14px}
 .card .m{color:var(--muted);font-size:12px;margin-top:6px}
 .more{flex:none;width:40px;height:40px;border-radius:50%;color:var(--muted);font-size:22px;line-height:1}
 .more:active{background:var(--surface2)}
+.ver{text-align:center;color:var(--muted);font-size:12px;margin:28px 0 0;opacity:.7}
 .empty{text-align:center;color:var(--muted);padding:64px 24px;line-height:1.55}
 .empty b{display:block;font-family:var(--serif);font-size:22px;color:var(--text);margin-bottom:8px}
 
@@ -140,6 +141,7 @@ details.why li{margin:4px 0;word-break:break-word}
     <button class="btn-add" id="addBtn">+ Añadir</button>
   </header>
   <div class="list" id="list"></div>
+  <p class="ver" id="ver"></p>
   <div class="empty hidden" id="empty">
     <b>Tu biblioteca está vacía</b>
     Pulsa «Añadir» y elige un archivo .m4b o .mp3 de tu móvil.<br>Se guarda dentro de la app y funciona sin conexión.
@@ -193,6 +195,7 @@ details.why li{margin:4px 0;word-break:break-word}
 'use strict';
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
+const APP_VERSION = 8;                        // súbelo junto con CACHE en sw.js
 
 /* ================= almacenamiento (IndexedDB) ================= */
 const dbp = new Promise((res, rej) => {
@@ -1005,6 +1008,11 @@ function openRecap() {
       } finally { recapBusy = false; }
     };
     body.append(wrap, go);
+    if (!r && 'speechSynthesis' in window) {
+      const h = document.createElement('div'); h.className = 'hint';
+      h.textContent = 'Cuando se genere el resumen, debajo tendrás el botón «Escuchar resumen» para oírlo en voz alta.';
+      body.append(h);
+    }
     if (r && !fresh) body.append(recapCard(r, 'Resumen anterior'));
     body.append(row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
   });
@@ -1015,11 +1023,12 @@ $('#awayPill').onclick = openRecap;
 /* ================= arranque ================= */
 (async () => {
   updatePlayIcons();
+  $('#ver').textContent = `Versión ${APP_VERSION}`;
   try { navigator.storage?.persist?.(); } catch {}
   await loadLibrary();
   let last; try { last = localStorage.getItem('last'); } catch {}
   if (last && books.some(b => b.id === last)) openBook(last, false);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).catch(() => {});
 })();
 </script>
 </body>
