@@ -7,7 +7,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="strict-origin">
 <!-- la página solo puede enviar datos a Gemini: aunque se colara código, la clave no podría salir a otro sitio -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com https://dieta-avisos.dieta-avisos.workers.dev; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="theme-color" content="#16130f">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -110,6 +110,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 .chip{padding:12px 18px;border-radius:999px;background:var(--surface2);font-size:16px;font-variant-numeric:tabular-nums}
 .chip.on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 .hint{color:var(--muted);font-size:13px;padding:6px 14px 12px;line-height:1.45}
+.label{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:14px 14px 2px}
+.inline{display:flex;gap:8px;align-items:center;padding:0 10px 10px}
+.inline input.text{margin:0;flex:1;width:auto}
+.inline .primary{margin:0;width:auto;padding:14px 20px}
 .primary{display:block;width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radius:14px;background:var(--accent);color:var(--accent-ink);font-weight:700;text-align:center}
 input.text{width:calc(100% - 20px);margin:6px 10px 10px;padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
 .pill{display:flex;align-items:center;gap:8px;margin:12px auto 0;padding:9px 16px;border-radius:999px;background:var(--surface2);border:1px solid var(--line);color:var(--accent);font-size:14px;font-weight:600}
@@ -257,7 +261,7 @@ details.why li{margin:4px 0;word-break:break-word}
 'use strict';
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
-const APP_VERSION = 11;                        // súbelo junto con CACHE en sw.js
+const APP_VERSION = 12;                        // súbelo junto con CACHE en sw.js
 
 /* ================= almacenamiento (IndexedDB) ================= */
 const dbp = new Promise((res, rej) => {
@@ -574,7 +578,7 @@ $('#prevCh').onclick = () => gotoChapter(-1);
 $('#nextCh').onclick = () => gotoChapter(1);
 
 audio.addEventListener('play', () => { autoRewind(); statTick = 0; updatePlayIcons(); if (window.speechSynthesis && speaking) stopSpeaking(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; });
-audio.addEventListener('pause', () => { pausedAt = Date.now(); pausedPos = audio.currentTime; trackListening(); saveStats(); updatePlayIcons(); savePos(true); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; });
+audio.addEventListener('pause', () => { pausedAt = Date.now(); pausedPos = audio.currentTime; trackListening(); saveStats(); updatePlayIcons(); savePos(true); queueSync(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; });
 audio.addEventListener('ended', async () => { if (cur) { cur.pos = audio.duration; await savePos(true); } updatePlayIcons(); });
 audio.addEventListener('timeupdate', () => { updateProgress(); trackListening(); savePos(false); checkSleepChapter(); });
 
@@ -1402,6 +1406,7 @@ function openAsk() {
 /* ---------- menú de la biblioteca: estadísticas y copia de seguridad ---------- */
 $('#moreBtn').onclick = () => sheet('Más opciones', body => body.append(
   row('Estadísticas de escucha', openStats),
+  row('Aviso para escuchar', avisosSheet),
   row('Guardar copia de seguridad', exportBackup),
   row('Recuperar copia de seguridad', () => $('#restoreFile').click()),
   row('Clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, closeSheet)))));
@@ -1603,6 +1608,146 @@ $('#restoreFile').onchange = async e => {
 $('#recapBtn').onclick = openRecap;
 $('#awayPill').onclick = openRecap;
 
+/* ================= aviso de salida (push) ================= */
+// Cada mañana se pregunta a qué hora sales; con la respuesta se programa un aviso unos minutos antes.
+// Usa el mismo servidor de avisos (Cloudflare Worker) que la app de dieta.
+const PUSH_API = 'https://dieta-avisos.dieta-avisos.workers.dev';
+const VAPID_PUBLIC = 'BGfejY7hZbc2tAu5C8TPfhV-hYKLUDG9hb0ke-bQ4Ykn4gmH6ILxwdaCVPGz5txBqcVVS8suqTVFmZ5EJGNYowQ';
+const AV_KEY = 'avisos';
+// plan: {day: 'AAAA-MM-DD', min: minutos desde las 0:00, o null si hoy no sales}
+const AV_DEFAULT = {on: false, endpoint: '', morning: 570, before: 5, plan: null, hash: '', at: 0};
+function avGet() { try { return Object.assign({}, AV_DEFAULT, JSON.parse(localStorage.getItem(AV_KEY))); } catch { return {...AV_DEFAULT}; } }
+function avSet(v) { try { localStorage.setItem(AV_KEY, JSON.stringify(v)); } catch {} }
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const pushOnHere = av => av.on && av.endpoint && pushSupported() && Notification.permission === 'granted';
+const hhmm = m => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const todayPlan = av => av.plan && av.plan.day === dayKey() ? av.plan : null;
+function b64ToBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); const raw = atob(s + '='.repeat((4 - s.length % 4) % 4)); return Uint8Array.from(raw, c => c.charCodeAt(0)); }
+function strHash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return String(h); }
+const postJSON = (path, data) => fetch(PUSH_API + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+
+function bookLine() {
+  // el libro que está abierto, o el último escuchado
+  const b = cur || books[0];
+  if (!b) return 'Ponte los cascos y tu audiolibro.';
+  const t = cur && cur.id === b.id && audio.readyState > 0 ? audio.currentTime : b.pos || 0;
+  let chap = '';
+  for (const c of b.chapters || []) if (c.start <= t + 0.25) chap = c.title;
+  return `Ponte «${b.title}»${chap ? ' · ' + chap : ''}, donde lo dejaste.`;
+}
+function buildNotifications(av) {
+  const out = [], now = Date.now(), plan = todayPlan(av), base = new Date();
+  for (let d = 0; d < 14; d++) {
+    const k = dayKey(new Date(base.getFullYear(), base.getMonth(), base.getDate() + d));
+    if (d === 0 && plan) continue;              // hoy ya respondiste
+    out.push({nid: k + ':pregunta', at: new Date(base.getFullYear(), base.getMonth(), base.getDate() + d, 0, av.morning).getTime(),
+      title: '¿A qué hora sales hoy? 🎧', body: 'Elige la hora y te aviso unos minutos antes para que te pongas el audiolibro.', tag: 'salida', url: '#salida'});
+  }
+  if (plan && plan.min != null && !dayMet(base)) {   // si ya cumpliste el objetivo de hoy, no hace falta
+    out.push({nid: `${plan.day}:salida:${plan.min}`, at: new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, plan.min - av.before).getTime(),
+      title: `Sales en ${av.before} min 🎧`, body: bookLine(), tag: 'salida', url: ''});
+  }
+  return out.filter(n => n.at > now);
+}
+let syncTimer = null;
+function queueSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncSchedule(false), 2500); }
+async function syncSchedule(force, extra = []) {
+  const av = avGet(); if (!pushOnHere(av)) return false;
+  const items = buildNotifications(av).concat(extra), h = strHash(JSON.stringify(items));
+  // el servidor solo guarda 14 días de preguntas: refrescar al menos cada 6 h que se abra la app
+  if (!force && h === av.hash && Date.now() - av.at < 6 * 3600e3) return true;
+  try {
+    let r = await postJSON('/schedule', {endpoint: av.endpoint, items});
+    if (r.status === 404) { await postJSON('/subscribe', {endpoint: av.endpoint}); r = await postJSON('/schedule', {endpoint: av.endpoint, items}); }
+    if (!r.ok) return false;
+    avSet(Object.assign(avGet(), {hash: h, at: Date.now()}));
+    return true;
+  } catch { return false; }
+}
+async function pushOn() {
+  if (!pushSupported()) throw new Error('navegador sin avisos');
+  if (await Notification.requestPermission() !== 'granted') throw new Error('sin permiso');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64ToBytes(VAPID_PUBLIC)});
+  const r = await postJSON('/subscribe', {endpoint: sub.endpoint});
+  if (!r.ok) throw new Error('el servidor respondió ' + r.status);
+  avSet(Object.assign(avGet(), {on: true, endpoint: sub.endpoint, hash: '', at: 0}));
+  await syncSchedule(true);
+}
+async function pushOff() {
+  const av = avGet();
+  try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); if (av.endpoint) await postJSON('/unsubscribe', {endpoint: av.endpoint}); } catch {}
+  avSet(Object.assign(av, {on: false, endpoint: '', hash: '', at: 0}));
+}
+
+function chipRow(values, label, isOn, pick) {
+  const wrap = document.createElement('div'); wrap.className = 'chips';
+  for (const v of values) {
+    const c = document.createElement('button'); c.className = 'chip' + (isOn(v) ? ' on' : ''); c.textContent = label(v);
+    c.onclick = () => pick(v); wrap.append(c);
+  }
+  return wrap;
+}
+const labelEl = txt => { const l = document.createElement('div'); l.className = 'label'; l.textContent = txt; return l; };
+const hintEl = txt => { const h = document.createElement('div'); h.className = 'hint'; h.textContent = txt; return h; };
+
+function avisosSheet() {
+  const av = avGet();
+  sheet('Aviso para escuchar', body => {
+    if (!pushSupported()) return body.append(hintEl('Este navegador no admite avisos. Abre la app instalada desde Chrome.'));
+    if (!pushOnHere(av)) {
+      const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = 'Activar avisos en este móvil';
+      ok.onclick = async () => {
+        ok.textContent = 'Activando…';
+        try { await pushOn(); toast('Avisos activados'); avisosSheet(); }
+        catch (e) { toast('No se pudieron activar: ' + e.message, 5000); ok.textContent = 'Activar avisos en este móvil'; }
+      };
+      return body.append(hintEl('Cada mañana te pregunto a qué hora sales y te aviso unos minutos antes para que te pongas el audiolibro.'), ok);
+    }
+    const plan = todayPlan(av);
+    body.append(row('Hoy', salidaSheet, '', !plan ? 'sin elegir' : plan.min == null ? 'no sales' : 'sales a las ' + hhmm(plan.min)));
+    const save = patch => { avSet(Object.assign(avGet(), patch)); syncSchedule(true); avisosSheet(); };
+    body.append(labelEl('Pregunta de la mañana'),
+      chipRow([480, 510, 540, 570, 600, 630], hhmm, v => v === av.morning, v => save({morning: v})),
+      labelEl('Avisarme antes de salir'),
+      chipRow([5, 10, 15], v => v + ' min', v => v === av.before, v => save({before: v})));
+    body.append(row('Enviar un aviso de prueba', async () => {
+      const ok = await syncSchedule(true, [{nid: 'prueba:' + Date.now(), at: Date.now() + 5000, title: 'Aviso de prueba 🎧', body: bookLine(), tag: 'prueba', url: ''}]);
+      toast(ok ? 'Llegará en uno o dos minutos' : 'No se pudo contactar con el servidor', 4000);
+    }), row('Quitar avisos de este móvil', async () => { await pushOff(); closeSheet(); toast('Avisos quitados'); }, 'danger'));
+  });
+}
+function salidaSheet() {
+  const plan = todayPlan(avGet());
+  sheet('¿A qué hora sales hoy?', body => {
+    const times = []; for (let m = 600; m <= 840; m += 30) times.push(m);
+    body.append(chipRow(times, hhmm, v => plan && plan.min === v, chooseSalida));
+    const line = document.createElement('div'); line.className = 'inline';
+    const i = document.createElement('input'); i.type = 'time'; i.className = 'text'; i.setAttribute('aria-label', 'Otra hora');
+    if (plan && plan.min != null) i.value = String(Math.floor(plan.min / 60)).padStart(2, '0') + ':' + String(plan.min % 60).padStart(2, '0');
+    const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = 'Guardar';
+    ok.onclick = () => { if (!i.value) return i.focus(); const [h, m] = i.value.split(':').map(Number); chooseSalida(h * 60 + m); };
+    line.append(i, ok);
+    body.append(labelEl('Otra hora'), line, row('Hoy no salgo', () => chooseSalida(null), plan && plan.min == null ? 'cur' : ''));
+  });
+}
+async function chooseSalida(min) {
+  const av = avGet();
+  av.plan = {day: dayKey(), min}; avSet(av); closeSheet();
+  if (min == null) toast('Vale, hoy sin aviso');
+  else if (!pushOnHere(av)) toast('Guardado. Activa los avisos en ☰ › Aviso para escuchar', 4000);
+  else toast(min - av.before > nowMin() ? `Te aviso a las ${hhmm(min - av.before)}` : 'Esa hora ya ha pasado: hoy no habrá aviso', 4000);
+  if (pushOnHere(av) && !await syncSchedule(true)) toast('No se pudo contactar con el servidor. Se reintentará al abrir la app', 5000);
+}
+// al tocar la pregunta de la mañana, la app se abre con #salida
+function checkHash() {
+  if (location.hash !== '#salida') return;
+  history.replaceState(null, '', location.pathname + location.search);
+  salidaSheet();
+}
+window.addEventListener('hashchange', checkHash);
+
 /* ================= arranque ================= */
 (async () => {
   updatePlayIcons();
@@ -1612,6 +1757,7 @@ $('#awayPill').onclick = openRecap;
   let last; try { last = localStorage.getItem('last'); } catch {}
   if (last && books.some(b => b.id === last)) openBook(last, false);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).catch(() => {});
+  checkHash(); syncSchedule(false);
 })();
 </script>
 </body>
