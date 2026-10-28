@@ -6,8 +6,8 @@
 <title>Audiolibros</title>
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="strict-origin">
-<!-- la página solo puede enviar datos a Gemini: aunque se colara código, la clave no podría salir a otro sitio -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com https://dieta-avisos.dieta-avisos.workers.dev; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- la página solo puede enviar datos a Anthropic (IA) y al servidor de avisos: aunque se colara código, la clave no podría salir a otro sitio -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://api.anthropic.com https://dieta-avisos.dieta-avisos.workers.dev; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="theme-color" content="#16130f">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -254,6 +254,7 @@ details.why li{margin:4px 0;word-break:break-word}
 
 <input type="file" id="file" accept="audio/*,.m4b,.m4a,.mp3" multiple hidden>
 <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+<input type="file" id="epubFile" accept=".epub,application/epub+zip" hidden>
 <audio id="audio" preload="metadata"></audio>
 <div id="toast" class="hidden"></div>
 
@@ -261,14 +262,14 @@ details.why li{margin:4px 0;word-break:break-word}
 'use strict';
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
-const APP_VERSION = 12;                        // súbelo junto con CACHE en sw.js
+const APP_VERSION = 13;                        // súbelo junto con CACHE en sw.js
 
 /* ================= almacenamiento (IndexedDB) ================= */
 const dbp = new Promise((res, rej) => {
-  const r = indexedDB.open('audiolibros', 1);
+  const r = indexedDB.open('audiolibros', 2);
   r.onupgradeneeded = () => {
-    r.result.createObjectStore('books', {keyPath: 'id'});
-    r.result.createObjectStore('blobs', {keyPath: 'id'});
+    for (const name of ['books', 'blobs', 'texts'])          // texts: texto de cada libro (EPUB)
+      if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, {keyPath: 'id'});
   };
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
@@ -447,6 +448,7 @@ function libraryMenu(b) {
   sheet(b.title.length > 40 ? b.title.slice(0, 40) + '…' : b.title, body => {
     body.append(
       row(`Apuntes (${notesOf(b).length})`, () => openNotes(b)),
+      row(b.hasText ? 'Texto del libro (EPUB) ✓' : 'Añadir texto del libro (EPUB)', () => textMenu(b)),
       row('Renombrar', () => { closeSheet(); renameBook(b); }),
       row('Marcar como no escuchado', async () => { b.pos = 0; await dbPut('books', b); if (cur && cur.id === b.id) audio.currentTime = 0; closeSheet(); renderLibrary(); }),
       row('Eliminar de la app', () => { closeSheet(); deleteBook(b); }, 'danger'));
@@ -468,7 +470,7 @@ async function deleteBook(b) {
     ok.onclick = async () => {
       if (cur && cur.id === b.id) unloadBook();
       if (coverUrls.has(b.id)) { URL.revokeObjectURL(coverUrls.get(b.id)); coverUrls.delete(b.id); }
-      await dbDel('books', b.id); await dbDel('blobs', b.id);
+      await dbDel('books', b.id); await dbDel('blobs', b.id); await dbDel('texts', b.id);
       closeSheet(); loadLibrary();
     };
     body.append(h, ok);
@@ -869,34 +871,14 @@ $('#sleepBtn').onclick = () => {
   });
 };
 
-/* ================= resumen «¿dónde me quedé?» ================= */
-/* Recorta el audio de los últimos minutos escuchados y se lo pasa a Gemini,
-   que lo escucha y devuelve un resumen. La clave se guarda solo en este móvil. */
-const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'];
-const REQUEST_TIMEOUT = 60000;                // por intento; después se prueba otro modelo
-const MAX_AUDIO_BYTES = 14e6;                 // la petición en línea admite ~20 MB tras base64
-const MAX_UPLOAD_BYTES = 300e6;               // más grande se sube como archivo (Files API, gratis)
-const getKey = () => { try { return localStorage.getItem('geminiKey') || ''; } catch { return ''; } };
-const setKey = k => { try { k ? localStorage.setItem('geminiKey', k) : localStorage.removeItem('geminiKey'); } catch {} };
-let recapSpan = 10, recapBusy = false, trackCache = null;
-
-/* aviso cuando Google rechaza por límite (429): el cupo diario se renueva a medianoche de California */
-function nextReset() {
-  const now = new Date(), tz = 'America/Los_Angeles';
-  const off = new Intl.DateTimeFormat('en-US', {timeZone: tz, timeZoneName: 'shortOffset'})
-    .formatToParts(now).find(p => p.type === 'timeZoneName').value;          // «GMT-7»
-  const h = Number((off.match(/[+-]\d+/) || ['-8'])[0]);
-  const [y, m, d] = new Intl.DateTimeFormat('en-CA', {timeZone: tz}).format(now).split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + 1) - h * 3600000);
-}
-function quotaMessage(j) {
-  const det = j.error?.details || [];
-  const v = det.find(d => /QuotaFailure/.test(d['@type']))?.violations || [];
-  if (v.some(x => /PerDay/i.test(x.quotaId || '')))
-    return `Has gastado los resúmenes gratis de hoy. Se renuevan a las ${nextReset().toLocaleTimeString('es', {hour: '2-digit', minute: '2-digit'})}.`;
-  const s = Math.ceil(parseFloat(det.find(d => /RetryInfo/.test(d['@type']))?.retryDelay) || 60);
-  return `Demasiadas peticiones seguidas. Espera ${s} segundos y vuelve a intentarlo.`;
-}
+/* ================= IA (Claude, de Anthropic) ================= */
+/* Claude no escucha audio: lee el texto del libro. Cada libro puede llevar su EPUB;
+   la app calcula qué parte del texto corresponde al minuto del audio y se la da a Claude.
+   La clave de Anthropic se guarda solo en este móvil. */
+const CLAUDE_MODEL = 'claude-opus-5-5';
+const getKey = () => { try { return localStorage.getItem('anthropicKey') || ''; } catch { return ''; } };
+const setKey = k => { try { k ? localStorage.setItem('anthropicKey', k) : localStorage.removeItem('anthropicKey'); } catch {} };
+let recapSpan = 10, recapBusy = false;
 
 const ago = ms => {
   const m = Math.round(ms / 60000), h = Math.round(ms / 3600000), d = Math.round(ms / 86400000);
@@ -909,196 +891,198 @@ function showAwayPill(book) {
   if (show) $('#awayTxt').textContent = `${ago(away).replace(/^h/, 'H')} · ¿Dónde me quedé?`;
 }
 
-/* pista de audio AAC dentro del .m4b: tablas de muestras + configuración del códec */
-function parseAudioTrack(buf) {
-  const dv = new DataView(buf), u8 = new Uint8Array(buf);
-  let tr = null;
-  walk(dv, 0, buf.byteLength, (t, s, e) => {
-    if (t !== 'trak' || tr) return;
-    const x = {};
-    const visit = (s, e) => walk(dv, s, e, (t2, s2, e2) => {
-      if (t2 === 'mdia' || t2 === 'minf' || t2 === 'stbl') visit(s2, e2);
-      else if (t2 === 'hdlr') x.handler = str4(dv, s2 + 8);
-      else if (t2 === 'mdhd') x.timescale = dv.getUint32(s2 + (dv.getUint8(s2) === 1 ? 20 : 12));
-      else if (['stts', 'stsc', 'stsz', 'stco', 'co64', 'stsd'].includes(t2)) x[t2] = s2;
-    });
-    visit(s, e);
-    if (x.handler === 'soun' && x.timescale && x.stts && x.stsc && x.stsz && x.stsd && (x.stco || x.co64)) tr = x;
-  });
-  if (!tr) return null;
-  // stsd → mp4a → esds → AudioSpecificConfig
-  const entry = tr.stsd + 8;
-  if (str4(dv, entry + 4) !== 'mp4a') return null;
-  const ver = dv.getUint16(entry + 16);
-  let asc = null;
-  walk(dv, entry + 36 + (ver === 1 ? 16 : ver === 2 ? 36 : 0), entry + dv.getUint32(entry), (t, s) => {
-    if (t !== 'esds') return;
-    const desc = p => { const tag = u8[p++]; let len = 0, b; do { b = u8[p++]; len = (len << 7) | (b & 0x7f); } while (b & 0x80); return {tag, len, p}; };
-    let d = desc(s + 4);
-    if (d.tag === 3) { let q = d.p + 2; const fl = u8[q++]; if (fl & 0x80) q += 2; if (fl & 0x40) q += 1 + u8[q]; if (fl & 0x20) q += 2; d = desc(q); }
-    if (d.tag === 4) d = desc(d.p + 13);
-    if (d.tag === 5) asc = u8.slice(d.p, d.p + d.len);
-  });
-  if (!asc || asc.length < 2) return null;
-  const aot = asc[0] >> 3, freq = ((asc[0] & 7) << 1) | (asc[1] >> 7), chans = (asc[1] >> 3) & 15;
-  if (aot === 31 || freq === 15 || !chans) return null;
-  tr.adts = {profile: aot >= 1 && aot <= 4 ? aot - 1 : 1, freq, chans};   // HE-AAC → cabecera LC, el decodificador detecta SBR
-  tr.dv = dv;
-  return tr;
-}
-function sampleAt(tr, mt) {
-  const dv = tr.dv, n = dv.getUint32(tr.stts + 4);
-  let p = tr.stts + 8, idx = 0, time = 0;
-  for (let i = 0; i < n; i++, p += 8) {
-    const c = dv.getUint32(p), d = dv.getUint32(p + 4);
-    if (time + c * d > mt) return idx + Math.floor((mt - time) / d);
-    time += c * d; idx += c;
+/* ---------- EPUB: texto y capítulos ---------- */
+async function unzip(file) {                    // lector ZIP mínimo (un EPUB es un ZIP)
+  const buf = new Uint8Array(await file.arrayBuffer()), dv = new DataView(buf.buffer);
+  let e = buf.length - 22;
+  while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+  if (e < 0) throw new Error('El archivo no es un EPUB válido');
+  const files = new Map(), n = dv.getUint16(e + 10, true);
+  for (let i = 0, p = dv.getUint32(e + 16, true); i < n; i++) {
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    files.set(utf8.decode(buf.subarray(p + 46, p + 46 + nlen)),
+      {method: dv.getUint16(p + 10, true), size: dv.getUint32(p + 20, true), at: dv.getUint32(p + 42, true)});
+    p += 46 + nlen + xlen + clen;
   }
-  return idx;
+  return async name => {
+    const f = files.get(name); if (!f) return null;
+    const start = f.at + 30 + dv.getUint16(f.at + 26, true) + dv.getUint16(f.at + 28, true);
+    const data = buf.subarray(start, start + f.size);
+    if (f.method === 0) return utf8.decode(data);
+    if (f.method === 8) return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    throw new Error('Compresión del EPUB no soportada');
+  };
 }
-function sampleSpans(tr, a, b) {                // [offset, tamaño] de las muestras a..b-1
-  const dv = tr.dv, out = [];
-  const fixed = dv.getUint32(tr.stsz + 4), size = i => fixed || dv.getUint32(tr.stsz + 12 + i * 4);
-  const co = tr.stco || tr.co64, nChunks = dv.getUint32(co + 4);
-  const chunkOff = c => tr.co64 ? Number(dv.getBigUint64(co + 8 + c * 8)) : dv.getUint32(co + 8 + c * 4);
-  const runs = dv.getUint32(tr.stsc + 4);
-  let sample = 0;
-  for (let r = 0; r < runs; r++) {
-    const first = dv.getUint32(tr.stsc + 8 + r * 12), spc = dv.getUint32(tr.stsc + 12 + r * 12);
-    const next = r + 1 < runs ? dv.getUint32(tr.stsc + 8 + (r + 1) * 12) : nChunks + 1;
-    if (sample + spc * (next - first) <= a) { sample += spc * (next - first); continue; }
-    for (let c = first; c < next; c++) {
-      if (sample + spc <= a) { sample += spc; continue; }
-      let off = chunkOff(c - 1);
-      for (let k = 0; k < spc; k++, sample++) {
-        if (sample >= b) return out;
-        const sz = size(sample);
-        if (sample >= a) out.push([off, sz]);
-        off += sz;
+const resolvePath = (base, rel) => decodeURIComponent(new URL(rel, 'http://x/' + base).pathname.slice(1));
+function parseXml(src, type = 'application/xhtml+xml') {
+  let d = new DOMParser().parseFromString(src, type);
+  if (d.querySelector('parsererror')) d = new DOMParser().parseFromString(src, 'text/html');
+  return d;
+}
+const BLOCK = /^(p|div|h[1-6]|li|blockquote|section|article|header|footer|tr|br|hr|dd|dt|pre|figcaption|aside)$/i;
+function docText(doc, startOffset, ids) {      // texto plano con saltos de párrafo; anota dónde empieza cada id
+  let out = '';
+  const walk = node => {
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) { out += c.data.replace(/\s+/g, ' '); continue; }
+      if (c.nodeType !== 1 || /^(script|style|head)$/i.test(c.localName)) continue;
+      if (c.id) ids.set(c.id, startOffset + out.length);
+      const block = BLOCK.test(c.localName);
+      if (block && !out.endsWith('\n')) out += '\n';
+      walk(c);
+      if (block && !out.endsWith('\n')) out += '\n';
+    }
+  };
+  walk(doc.body || doc.documentElement);
+  return out.replace(/ *\n */g, '\n').replace(/\n{2,}/g, '\n');
+}
+async function parseEpub(file) {
+  const read = await unzip(file);
+  const container = await read('META-INF/container.xml');
+  if (!container) throw new Error('El archivo no es un EPUB válido');
+  const opfPath = parseXml(container, 'application/xml').querySelector('rootfile').getAttribute('full-path');
+  const opf = parseXml(await read(opfPath), 'application/xml');
+  const items = new Map([...opf.querySelectorAll('manifest > item')].map(it =>
+    [it.getAttribute('id'), {href: resolvePath(opfPath, it.getAttribute('href')), props: it.getAttribute('properties') || '', type: it.getAttribute('media-type')}]));
+  const spine = [...opf.querySelectorAll('spine > itemref')].map(r => items.get(r.getAttribute('idref'))).filter(Boolean);
+  let text = '';
+  const fileStart = new Map(), ids = new Map();
+  for (const it of spine) {
+    const src = await read(it.href); if (src == null) continue;
+    const idMap = new Map();
+    fileStart.set(it.href, text.length);
+    text += docText(parseXml(src), text.length, idMap) + '\n';
+    for (const [k, v] of idMap) ids.set(it.href + '#' + k, v);
+  }
+  // índice: nav de EPUB 3 o toc.ncx de EPUB 2
+  const toc = [];
+  const nav = [...items.values()].find(x => /\bnav\b/.test(x.props));
+  if (nav) {
+    const d = parseXml(await read(nav.href));
+    const navEl = [...d.querySelectorAll('nav')].find(n => /toc/.test(n.getAttribute('epub:type') || n.getAttributeNS('http://www.idpf.org/2007/ops', 'type') || '')) || d.querySelector('nav');
+    for (const a of navEl ? navEl.querySelectorAll('a[href]') : []) toc.push({title: a.textContent.replace(/\s+/g, ' ').trim(), href: resolvePath(nav.href, a.getAttribute('href'))});
+  } else {
+    const ncxId = opf.querySelector('spine')?.getAttribute('toc'), ncx = items.get(ncxId) || [...items.values()].find(x => /ncx/.test(x.type));
+    if (ncx) {
+      const d = parseXml(await read(ncx.href), 'application/xml');
+      for (const np of d.querySelectorAll('navPoint')) {
+        const src = np.querySelector('content')?.getAttribute('src'); if (!src) continue;
+        toc.push({title: (np.querySelector('navLabel text')?.textContent || '').trim(), href: resolvePath(ncx.href, src)});
       }
     }
   }
+  const chapters = uniqBy(toc.map(t => {
+    const [f, frag] = t.href.split('#');
+    const off = frag && ids.has(f + '#' + frag) ? ids.get(f + '#' + frag) : fileStart.get(f);
+    return off == null ? null : {title: t.title, off};
+  }).filter(Boolean), c => c.off).sort((a, b) => a.off - b.off);
+  if (text.trim().length < 1000) throw new Error('No se encontró texto en el EPUB');
+  return {text, chapters, name: file.name};
+}
+
+/* ---------- del minuto del audio a la posición en el texto ---------- */
+const normTitle = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\b(capitulo|cap|chapter|parte|part|seccion)\b/g, ' ').replace(/\s+/g, ' ').trim();
+function titleScore(a, b) {
+  const A = normTitle(a).split(' ').filter(Boolean), B = new Set(normTitle(b).split(' ').filter(Boolean));
+  if (!A.length || !B.size) return 0;
+  const words = A.filter(w => !/^\d+$/.test(w)), common = words.filter(w => B.has(w)).length;
+  const nA = A.find(w => /^\d+$/.test(w)), nB = [...B].find(w => /^\d+$/.test(w));
+  const wordScore = words.length ? common / Math.max(words.length, [...B].filter(w => !/^\d+$/.test(w)).length || 1) : 0;
+  return (nA && nA === nB ? 0.6 : 0) + wordScore;
+}
+// puntos de referencia (segundo del audio ↔ carácter del texto): capítulos con título parecido y los ajustes manuales
+function textAnchors(book, tx) {
+  const dur = book.duration || audio.duration || 1, pts = [];
+  let j0 = 0;
+  for (const ch of book.chapters || []) {
+    let best = -1, bestScore = 0.55;
+    for (let j = j0; j < tx.chapters.length; j++) { const s = titleScore(ch.title, tx.chapters[j].title); if (s > bestScore) { bestScore = s; best = j; } }
+    if (best >= 0) { pts.push({t: ch.start, off: tx.chapters[best].off}); j0 = best + 1; }
+  }
+  for (const a of book.textAnchors || []) pts.push({t: a.t, off: a.off, manual: true});
+  if (!pts.some(p => p.t < 30)) pts.push({t: 0, off: tx.chapters[0]?.off || 0});
+  pts.push({t: dur, off: tx.text.length});
+  pts.sort((a, b) => a.t - b.t || (b.manual ? 1 : 0) - (a.manual ? 1 : 0));
+  const out = [];                                  // solo puntos que avanzan a la vez en tiempo y en texto
+  for (const p of pts) {                           // un ajuste manual manda sobre los automáticos que lo contradicen
+    if (p.manual) while (out.length && !out.at(-1).manual && (out.at(-1).off >= p.off || out.at(-1).t >= p.t)) out.pop();
+    const last = out.at(-1);
+    if (!last || (p.t > last.t && p.off > last.off)) out.push(p);
+  }
   return out;
 }
-async function extractAudio(t0, t1, maxBytes = MAX_AUDIO_BYTES) {
-  const rec = await dbGet('blobs', cur.id), file = rec.blob;
-  if (!trackCache || trackCache.id !== cur.id) {
-    const moov = await readMoov(file);
-    trackCache = {id: cur.id, tr: moov && parseAudioTrack(moov)};
+function textOffsetAt(book, tx, t) {
+  const pts = textAnchors(book, tx);
+  for (let k = 1; k < pts.length; k++) if (t <= pts[k].t) {
+    const a = pts[k - 1], b = pts[k];
+    return Math.round(a.off + (b.off - a.off) * (t - a.t) / (b.t - a.t));
   }
-  const tr = trackCache.tr;
-  if (tr) {
-    let spans = sampleSpans(tr, sampleAt(tr, t0 * tr.timescale), sampleAt(tr, t1 * tr.timescale));
-    let total = 0, from = spans.length;
-    while (from > 0 && total + spans[from - 1][1] + 7 <= maxBytes) total += spans[--from][1] + 7;
-    spans = spans.slice(from);
-    if (!spans.length) throw new Error('No hay audio en ese tramo');
-    let lo = Infinity, hi = 0;
-    for (const [off, sz] of spans) { lo = Math.min(lo, off); hi = Math.max(hi, off + sz); }
-    const src = new Uint8Array(await file.slice(lo, hi).arrayBuffer());
-    const out = new Uint8Array(total), {profile, freq, chans} = tr.adts;
-    let p = 0;
-    for (const [off, sz] of spans) {         // cada trama AAC con su cabecera ADTS
-      const len = sz + 7;
-      out.set([0xFF, 0xF1, (profile << 6) | (freq << 2) | (chans >> 2), ((chans & 3) << 6) | (len >> 11), (len >> 3) & 0xFF, ((len & 7) << 5) | 0x1F, 0xFC], p);
-      out.set(src.subarray(off - lo, off - lo + sz), p + 7);
-      p += len;
-    }
-    return {blob: new Blob([out], {type: 'audio/aac'}), mime: 'audio/aac'};
-  }
-  if (/mpeg|mp3/.test(file.type) || /\.mp3$/i.test(file.name || '')) {   // MP3: corte proporcional, las tramas se resincronizan solas
-    const bps = file.size / (cur.duration || audio.duration), a = Math.floor(t0 * bps);
-    const b = Math.min(file.size, Math.ceil(t1 * bps), a + maxBytes);
-    return {blob: file.slice(a, b), mime: 'audio/mp3'};
-  }
-  throw new Error('Este formato de audio aún no se puede resumir');
+  return tx.text.length;
 }
-const toBase64 = blob => new Promise((res, rej) => {
-  const r = new FileReader();
-  r.onload = () => res(r.result.slice(r.result.indexOf(',') + 1));
-  r.onerror = () => rej(r.error);
-  r.readAsDataURL(blob);
-});
-/* Modelos: se piden a Google los que admite esta clave (cambian a menudo) y se prueban
-   de mejor a peor; Flash-Lite al final. La lista se guarda un día. */
-async function listModels(key) {
-  try { const c = JSON.parse(localStorage.getItem('geminiModels')); if (c && Date.now() - c.at < 86400000 && c.list.length) return c.list; } catch {}
-  let r;
-  try { r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', {headers: {'x-goog-api-key': key}}); }
-  catch { return GEMINI_MODELS; }
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    if (/api key/i.test(j.error?.message || '')) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
-    return GEMINI_MODELS;
-  }
-  const ver = n => parseFloat((n.match(/^gemini-(\d+(?:\.\d+)?)/) || [0, Infinity])[1]);   // los alias «-latest» van primero
-  const list = [...new Set((j.models || [])
-    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map(m => m.name.replace(/^models\//, ''))
-    .filter(n => /^gemini-.*flash/.test(n) && !/image|tts|live|audio|embed|thinking|exp|robotics|computer/.test(n)))]
-    .sort((x, y) => (/lite/.test(x) - /lite/.test(y)) || (ver(y) - ver(x)) || (/preview/.test(x) - /preview/.test(y)))
-    .slice(0, 10);
-  if (!list.length) return GEMINI_MODELS;
-  try { localStorage.setItem('geminiModels', JSON.stringify({at: Date.now(), list})); } catch {}
-  return list;
+const bookText = id => dbGet('texts', id);
+const MAX_TEXT_CHARS = 300000;                   // ~75.000 tokens como mucho por petición
+const CHARS_PER_MIN = 3000;                      // se narran ~1.000 caracteres por minuto; el triple da margen sin disparar el coste
+function excerpt(tx, from, to, margin = 800, mins = 0) {   // texto escuchado + un margen marcado tras la posición estimada
+  const cap = Math.min(MAX_TEXT_CHARS, mins ? mins * CHARS_PER_MIN : MAX_TEXT_CHARS);
+  from = Math.max(0, Math.min(from, to - 1500)); from = Math.max(from, to - cap);
+  const cut = s => s.replace(/^\S*\s/, '');      // sin palabras cortadas al principio
+  return cut(tx.text.slice(from, to)) + '\n\n[POSICIÓN ESTIMADA DEL OYENTE]\n\n' + tx.text.slice(to, to + margin);
 }
-const RECAP_SCHEMA = {type: 'OBJECT', required: ['donde', 'temas', 'ultima'],
-  properties: {donde: {type: 'STRING'}, temas: {type: 'ARRAY', items: {type: 'STRING'}}, ultima: {type: 'STRING'}}};
-const ANSWER_SCHEMA = {type: 'OBJECT', required: ['respuesta'], properties: {respuesta: {type: 'STRING'}}};
-async function askGemini(key, media, prompt, onStatus, schema, timeout = REQUEST_TIMEOUT) {
-  const body = {
-    contents: [{role: 'user', parts: [media, {text: prompt}]}],
-    generationConfig: {responseMimeType: 'application/json', responseSchema: schema}
-  };
-  const payload = JSON.stringify(body), models = await listModels(key), log = [];
-  let quota = '', busy = false, slow = false;
-  // Saturado (5xx), sin cupo (429, va por modelo), lento u otro fallo → se prueba el siguiente modelo.
-  for (const [n, model] of models.entries()) {
-    if (n) onStatus(`Probando otro modelo (${n + 1} de ${models.length}): ${model}…`);
-    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeout);
-    let r, j;
-    try {
-      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': key}, body: payload, signal: ctl.signal});
-      j = await r.json().catch(() => ({}));
-    } catch (e) {
-      if (e.name !== 'AbortError') throw e;                     // sin conexión
-      slow = true; log.push(`${model}: tardó más de ${Math.round(timeout / 1000)} s`); continue;
-    } finally { clearTimeout(timer); }
-    const msg = (j.error?.message || '').split('\n')[0].slice(0, 140);
-    if (r.ok) {
-      const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-      try { if (txt) return JSON.parse(txt); } catch {}
-      log.push(`${model}: respuesta vacía o no válida`); continue;
-    }
-    if (/api key/i.test(msg)) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
-    log.push(`${model}: ${r.status} ${msg}`);
-    if (r.status === 429) quota = quotaMessage(j);
-    else if (r.status >= 500) { busy = true; await new Promise(res => setTimeout(res, 1500)); }
+
+/* ---------- llamada a Claude ---------- */
+let sdkPromise = null;
+const loadSdk = () => sdkPromise || (sdkPromise = import('./vendor/anthropic-sdk.mjs').then(m => m.default));
+const RECAP_SCHEMA = {type: 'object', additionalProperties: false, required: ['donde', 'temas', 'ultima'],
+  properties: {donde: {type: 'string'}, temas: {type: 'array', items: {type: 'string'}}, ultima: {type: 'string'}}};
+const ANSWER_SCHEMA = {type: 'object', additionalProperties: false, required: ['respuesta'], properties: {respuesta: {type: 'string'}}};
+async function askClaude(system, content, schema) {
+  const Anthropic = await loadSdk();
+  const client = new Anthropic({apiKey: getKey(), dangerouslyAllowBrowser: true, timeout: 180000, maxRetries: 2});
+  let res;
+  try {
+    res = await client.beta.messages.create({
+      model: CLAUDE_MODEL, max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',   // si un filtro de seguridad rechaza, otro modelo lo reintenta
+      output_config: {effort: 'medium', format: {type: 'json_schema', schema}},
+      system, messages: [{role: 'user', content}],
+    });
+  } catch (e) {
+    if (e instanceof Anthropic.AuthenticationError) throw Object.assign(new Error('La clave de Anthropic no es válida'), {badKey: true});
+    if (e instanceof Anthropic.PermissionDeniedError) throw new Error('Esta clave no tiene permiso para usar Claude.');
+    if (e instanceof Anthropic.RateLimitError) throw new Error('Has hecho demasiadas peticiones seguidas. Espera un minuto y vuelve a intentarlo.');
+    if (e instanceof Anthropic.APIConnectionError) throw new Error('No hay conexión a internet (o Anthropic no responde). Esta función necesita conexión.');
+    if (e instanceof Anthropic.BadRequestError && /credit balance/i.test(e.message)) throw new Error('Tu cuenta de Anthropic no tiene saldo. Añade crédito en console.anthropic.com → Billing.');
+    if (e instanceof Anthropic.InternalServerError || e?.status === 529) throw new Error('Claude está saturado ahora mismo. Prueba de nuevo en unos minutos.');
+    if (e instanceof Anthropic.APIError) throw new Error(`Error de Anthropic (${e.status ?? 'sin código'}): ${e.error?.error?.message || e.message}`);
+    throw e;
   }
-  try { localStorage.removeItem('geminiModels'); } catch {}       // la próxima vez se vuelve a preguntar
-  throw Object.assign(new Error(busy ? 'Gemini está saturado ahora mismo. Prueba de nuevo en unos minutos.' :
-    quota || (slow ? 'Gemini tardó demasiado en responder. Prueba con 5 minutos o con mejor conexión.' :
-    'Ningún modelo de Gemini pudo resumir el audio.')), {details: log});
+  if (res.stop_reason === 'refusal') throw new Error('Claude no ha querido responder a esta petición.');
+  if (res.stop_reason === 'max_tokens') throw new Error('La respuesta de Claude salió cortada. Prueba con un tramo más corto.');
+  const txt = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  try { return JSON.parse(txt); } catch { throw new Error('Claude devolvió una respuesta que no se pudo leer.'); }
 }
+
+const RECAP_SYSTEM = 'Ayudas a alguien a retomar un audiolibro que estaba escuchando. Recibes el texto del libro correspondiente a lo último que ha escuchado. ' +
+  'La marca [POSICIÓN ESTIMADA DEL OYENTE] señala aproximadamente dónde lo dejó: el texto posterior es solo un margen por si la estimación se quedó corta, no lo resumas como si ya lo hubiera oído. ' +
+  'Responde en español, claro y breve. Cíñete al texto; no inventes.';
 async function makeRecap(min, onStatus) {
-  onStatus('Preparando el audio…');
+  onStatus('Buscando en el libro lo que escuchaste…');
+  const tx = await bookText(cur.id);
+  if (!tx) throw Object.assign(new Error('Este libro aún no tiene su EPUB.'), {needText: true});
   const t1 = audio.currentTime, t0 = Math.max(0, t1 - min * 60);
   const i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
   const dur = audio.duration || cur.duration, pct = dur ? Math.round(t1 / dur * 100) : 0;
-  const {blob, mime} = await extractAudio(t0, t1);
   const prev = cur.recap && cur.recap.pos < t0 ? cur.recap.data : null;
-  const prompt = `Ayudas a alguien a retomar un audiolibro. El audio adjunto son los últimos ${Math.round((t1 - t0) / 60)} minutos que escuchó de «${cur.title}»` +
-    (cur.artist ? ` (${cur.artist})` : '') + (chap ? `, dentro de «${chap}»` : '') + `. Va por el ${pct} % del libro.\n` +
-    (prev ? `Contexto de un resumen anterior, de más atrás en el libro: ${prev.donde} ${prev.temas.join(' ')}\n` : '') +
-    `Responde en español, claro y breve, para que recuerde de qué iba:\n` +
-    `- donde: una o dos frases sobre en qué parte del libro está y de qué trata este tramo.\n` +
-    `- temas: entre 3 y 6 puntos, en orden, con las ideas, argumentos, ejemplos, casos o personas que se mencionan.\n` +
-    `- ultima: la idea concreta que se estaba explicando justo al final del audio, donde lo dejó.\n` +
-    `Cíñete a lo que se oye en el audio; no inventes.`;
-  const b64 = await toBase64(blob);
-  onStatus('Gemini está escuchando el tramo y resumiendo… suele tardar entre 10 y 40 segundos.');
-  const data = await askGemini(getKey(), {inline_data: {mime_type: mime, data: b64}}, prompt, onStatus, RECAP_SCHEMA);
+  const content = [
+    {type: 'text', text: `<fragmento>\n${excerpt(tx, textOffsetAt(cur, tx, t0), textOffsetAt(cur, tx, t1), 800, min)}\n</fragmento>`},
+    {type: 'text', text: `Libro: «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}${chap ? `. Capítulo del audio: «${chap}»` : ''}. Va por el ${pct} % del libro; el fragmento son unos ${min} minutos de escucha.\n` +
+      (prev ? `Resumen anterior, de más atrás en el libro: ${prev.donde}\n` : '') +
+      'Devuelve:\n- donde: una o dos frases sobre en qué parte del libro está y de qué trata este tramo.\n' +
+      '- temas: entre 3 y 6 puntos, en orden, con las ideas, argumentos, ejemplos, casos o personas que aparecen.\n' +
+      '- ultima: la idea concreta que se estaba explicando justo antes de la marca, donde lo dejó.'}];
+  onStatus('Claude está leyendo el tramo y resumiendo…');
+  const data = await askClaude(RECAP_SYSTEM, content, RECAP_SCHEMA);
   cur.recap = {pos: t1, min, chapter: chap, date: Date.now(), data};
   await addNote({type: 'recap', ...cur.recap});
   return cur.recap;
@@ -1247,18 +1231,80 @@ function openNotes(b = cur) {
 
 function keyForm(body, after) {
   const h = document.createElement('div'); h.className = 'hint';
-  h.innerHTML = 'Para resumir, la app manda el trozo de audio a Google Gemini, que lo escucha y lo resume. ' +
-    'Necesitas una clave gratuita: entra en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, ' +
-    'pulsa «Create API key», cópiala y pégala aquí. Se guarda solo en este móvil.';
-  const i = document.createElement('input'); i.className = 'text'; i.type = 'password'; i.placeholder = 'Pega aquí tu clave (AIza…)';
+  h.innerHTML = 'Los resúmenes y las preguntas los hace Claude, la IA de Anthropic, leyendo el texto del libro. ' +
+    'Pega aquí tu clave de API: se crea en <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a> ' +
+    '(empieza por «sk-ant-»). Se guarda solo en este móvil. Cada resumen o pregunta cuesta unos céntimos de tu saldo de Anthropic.';
+  const i = document.createElement('input'); i.className = 'text'; i.type = 'password'; i.placeholder = 'Pega aquí tu clave (sk-ant-…)';
   i.autocomplete = 'off'; i.value = getKey();
   const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = 'Guardar clave';
   ok.onclick = () => { const k = i.value.trim(); if (!k) return toast('Pega la clave primero'); setKey(k); toast('Clave guardada'); after(); };
   body.append(h, i, ok);
 }
 
-/* ejecuta una petición a Gemini mostrando el progreso y, si falla, el motivo */
-async function runGemini(body, task, onDone, retry) {
+/* ---------- texto del libro (EPUB) ---------- */
+let epubTarget = null, epubAfter = null;
+function pickEpub(book, after) { epubTarget = book; epubAfter = after; $('#epubFile').click(); }
+$('#epubFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  const b = epubTarget; if (!f || !b) return;
+  toast('Leyendo el EPUB…', 60000);
+  try {
+    const tx = await parseEpub(f);
+    await dbPut('texts', {id: b.id, ...tx});
+    b.hasText = tx.name; b.textAnchors = []; await dbPut('books', b);
+    const matched = textAnchors(b, tx).length - 2;
+    toast(`Texto añadido: ${tx.chapters.length} capítulos en el EPUB` + (b.chapters?.length ? `, ${Math.max(0, matched)} ${Math.max(0, matched) === 1 ? 'enlazado' : 'enlazados'} con el audio` : ''), 4500);
+    epubAfter?.();
+  } catch (err) { console.error(err); toast('No se pudo leer: ' + err.message, 5000); }
+};
+function needTextSheet(after) {
+  sheet('Falta el texto del libro', body => {
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = 'Claude no puede escuchar el audio, así que lee el texto del libro. Añade el EPUB de este mismo libro: ' +
+      'la app buscará la parte que corresponde a donde vas. Solo hace falta una vez por libro.';
+    const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = 'Elegir el EPUB del libro';
+    ok.onclick = () => pickEpub(cur, after);
+    body.append(h, ok);
+  });
+}
+/* ajuste fino: eliges el párrafo que estabas oyendo y la app lo usa como referencia */
+async function openTextAlign(b = cur) {
+  const tx = await bookText(b.id);
+  if (!tx) return needTextSheet(() => openTextAlign(b));
+  const t = audio.currentTime, est = textOffsetAt(b, tx, t);
+  const paras = []; let p = 0;
+  for (const s of tx.text.split('\n')) { if (s.trim().length > 1) paras.push({off: p, s}); p += s.length + 1; }
+  let k = paras.findIndex(x => x.off > est); k = (k < 0 ? paras.length : k) - 1;
+  sheet('¿Qué estabas oyendo?', body => {
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = `Toca el párrafo que estabas oyendo en ${fmt(t)}. Marcado en color: donde la app cree que vas. Con cada ajuste la posición se vuelve más precisa.`;
+    body.append(h);
+    for (let j = Math.max(0, k - 7); j <= Math.min(paras.length - 1, k + 4); j++) {
+      const r = row(paras[j].s.length > 160 ? paras[j].s.slice(0, 160) + '…' : paras[j].s, async () => {
+        b.textAnchors = (b.textAnchors || []).filter(a => Math.abs(a.t - t) > 30);
+        b.textAnchors.push({t, off: paras[j].off + Math.round(paras[j].s.length / 2)});
+        await dbPut('books', b); toast('Posición ajustada'); closeSheet();
+      }, j === k ? 'cur' : '');
+      r.style.fontSize = '14px'; r.style.lineHeight = '1.4';
+      body.append(r);
+    }
+    if (b.textAnchors?.length) body.append(row(`Borrar mis ajustes (${b.textAnchors.length})`, async () => { b.textAnchors = []; await dbPut('books', b); toast('Ajustes borrados'); closeSheet(); }, 'danger'));
+  });
+  setTimeout(() => $('#sheetBody .cur')?.scrollIntoView({block: 'center'}), 60);
+}
+function textMenu(b) {
+  sheet('Texto del libro', body => {
+    const h = document.createElement('div'); h.className = 'hint';
+    h.textContent = b.hasText ? `EPUB: ${b.hasText}. Claude lo usa para resumir y responder.` : 'Este libro aún no tiene texto. Añade su EPUB para usar los resúmenes y las preguntas.';
+    body.append(h, row(b.hasText ? 'Cambiar el EPUB' : 'Añadir el EPUB', () => pickEpub(b, closeSheet)));
+    if (b.hasText) body.append(
+      row('Ajustar la posición en el texto', () => { if (!cur || cur.id !== b.id) return toast('Abre el libro primero'); openTextAlign(b); }),
+      row('Quitar el texto', async () => { await dbDel('texts', b.id); b.hasText = ''; b.textAnchors = []; await dbPut('books', b); toast('Texto quitado'); closeSheet(); }, 'danger'));
+  });
+}
+
+/* ejecuta una petición a Claude mostrando el progreso y, si falla, el motivo */
+async function runAI(body, task, onDone, retry) {
   if (recapBusy) return;
   recapBusy = true;
   const wasPlaying = !audio.paused; audio.pause();
@@ -1270,19 +1316,12 @@ async function runGemini(body, task, onDone, retry) {
     body.innerHTML = ''; onDone(res);
   } catch (e) {
     console.error(e);
+    if (e.needText) return needTextSheet(retry);
     if (!$('#sheet')) return;
     body.innerHTML = '';
     const h = document.createElement('div'); h.className = 'hint'; h.style.color = 'var(--danger)';
-    h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' :
-      e instanceof TypeError ? 'No hay conexión a internet (o Gemini no responde). Esta función necesita conexión.' : 'No se pudo completar: ' + e.message;
+    h.textContent = e.badKey ? e.message + '. Vuelve a pegarla.' : 'No se pudo completar: ' + e.message;
     body.append(h);
-    if (e.details?.length) {
-      const d = document.createElement('details'); d.className = 'why';
-      const sm = document.createElement('summary'); sm.textContent = 'Ver qué respondió cada modelo';
-      const ul = document.createElement('ul');
-      for (const t of e.details) { const li = document.createElement('li'); li.textContent = t; ul.append(li); }
-      d.append(sm, ul); body.append(d);
-    }
     if (e.badKey) keyForm(body, retry); else body.append(row('Reintentar', retry));
     if (wasPlaying) audio.play().catch(() => {});
   } finally { recapBusy = false; }
@@ -1292,12 +1331,14 @@ function continueBtn() {
   cont.onclick = () => { closeSheet(); audio.play().catch(() => {}); };
   return cont;
 }
+const alignRow = () => row('¿No coincide con lo que oíste? Ajustar posición', () => openTextAlign(cur));
 
 function openRecap() {
   if (!cur) return;
   $('#awayPill').classList.add('hidden');
+  if (!getKey()) return sheet('Clave de Anthropic', b => keyForm(b, openRecap));
+  if (!cur.hasText) return needTextSheet(openRecap);
   sheet('¿Dónde me quedé?', body => {
-    if (!getKey()) return keyForm(body, openRecap);
     const r = cur.recap, fresh = r && Math.abs(r.pos - audio.currentTime) < 90;
     if (fresh) body.append(recapCard(r));
     const wrap = document.createElement('div'); wrap.className = 'chips';
@@ -1309,7 +1350,7 @@ function openRecap() {
       wrap.append(c);
     }
     label();
-    go.onclick = () => runGemini(body, st => makeRecap(recapSpan, st), res => body.append(recapCard(res), continueBtn()), openRecap);
+    go.onclick = () => runAI(body, st => makeRecap(recapSpan, st), res => body.append(recapCard(res), continueBtn(), alignRow()), openRecap);
     body.append(wrap, go);
     if (!r && 'speechSynthesis' in window) {
       const h = document.createElement('div'); h.className = 'hint';
@@ -1318,67 +1359,45 @@ function openRecap() {
     }
     if (r && !fresh) body.append(recapCard(r, 'Resumen anterior'));
     body.append(row('Preguntar al libro', openAsk), row(`Apuntes del libro (${noteItems(cur).length})`, () => openNotes(cur)),
-      row('Cambiar clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, openRecap))));
+      row('Texto del libro y ajuste de posición', () => textMenu(cur)),
+      row('Clave de Anthropic', () => sheet('Clave de Anthropic', b => keyForm(b, openRecap))));
   });
 }
 
-/* ---------- preguntar al libro: escucha el capítulo actual desde su inicio hasta donde vas ---------- */
+/* ---------- preguntar al libro: Claude lee el capítulo actual desde su inicio hasta donde vas ---------- */
 const NO_CHAPTER_MINUTES = 30;                // libros sin capítulos: últimos 30 min
-let uploadCache = null;                       // último audio subido, para no resubirlo en cada pregunta
-async function audioPart(t0, t1, onStatus) {
-  const {blob, mime} = await extractAudio(t0, t1, MAX_UPLOAD_BYTES);
-  if (blob.size <= MAX_AUDIO_BYTES) return {inline_data: {mime_type: mime, data: await toBase64(blob)}};
-  const key = getKey(), c = uploadCache;
-  if (c && c.key === key && c.bookId === cur.id && Math.abs(c.t0 - t0) < 1 && Math.abs(c.t1 - t1) < 20 && Date.now() - c.at < 40 * 3600000)
-    return {file_data: {mime_type: c.mime, file_uri: c.uri}};
-  onStatus(`Subiendo el audio del capítulo a Gemini (${Math.round(blob.size / 1e6)} MB)…`);
-  const r = await fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
-    method: 'POST', headers: {'x-goog-api-key': key, 'X-Goog-Upload-Protocol': 'raw', 'Content-Type': mime}, body: blob});
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const msg = j.error?.message || 'HTTP ' + r.status;
-    if (/api key/i.test(msg)) throw Object.assign(new Error('La clave de Gemini no es válida'), {badKey: true});
-    throw new Error('No se pudo subir el audio a Gemini: ' + msg);
-  }
-  let f = j.file || j;
-  for (let k = 0; f.state === 'PROCESSING' && k < 90; k++) {   // Gemini prepara el archivo unos segundos
-    onStatus('Gemini está preparando el audio…');
-    await new Promise(res => setTimeout(res, 2000));
-    f = await fetch(`https://generativelanguage.googleapis.com/v1beta/${f.name}`, {headers: {'x-goog-api-key': key}}).then(x => x.json());
-  }
-  if (f.state !== 'ACTIVE' || !f.uri) throw new Error('Gemini no pudo preparar el audio');
-  uploadCache = {key, bookId: cur.id, t0, t1, uri: f.uri, mime: f.mimeType || mime, at: Date.now()};
-  return {file_data: {mime_type: uploadCache.mime, file_uri: f.uri}};
-}
+const ASK_SYSTEM = 'Respondes preguntas de alguien que está escuchando un audiolibro. Recibes el texto del libro desde el inicio del capítulo actual hasta donde va el oyente; ' +
+  'la marca [POSICIÓN ESTIMADA DEL OYENTE] señala aproximadamente dónde lo dejó y lo que sigue es solo margen: no adelantes contenido posterior. ' +
+  'Si la pregunta habla de «esto» o «lo último», se refiere a lo que hay justo antes de la marca. ' +
+  'Responde en español, claro y directo, en un máximo de unas 150 palabras y sin formato markdown. Básate en el texto; si completas con conocimiento general del tema, dilo. Si la respuesta no está en el texto, indícalo.';
 async function askBook(question, onStatus) {
-  onStatus('Preparando el audio del capítulo…');
+  onStatus('Buscando en el libro el capítulo actual…');
+  const tx = await bookText(cur.id);
+  if (!tx) throw Object.assign(new Error('Este libro aún no tiene su EPUB.'), {needText: true});
   const t1 = audio.currentTime, i = chapterIndex(t1), chap = i >= 0 ? chapters()[i].title : '';
   let t0 = i >= 0 ? chapters()[i].start : t1 - NO_CHAPTER_MINUTES * 60;
   t0 = Math.max(0, Math.min(t0, t1 - 180));     // al menos 3 min, aunque el capítulo acabe de empezar
   const mins = Math.max(1, Math.round((t1 - t0) / 60)), whole = i >= 0 && t0 === chapters()[i].start;
-  const media = await audioPart(t0, t1, onStatus);
   const ctx = notesOf(cur).filter(n => n.type === 'recap' && n.pos < t0).slice(-2).map(n => n.data.donde).join(' ');
-  const prompt = `Alguien está escuchando el audiolibro «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}. ` +
-    (whole ? `El audio adjunto es el capítulo «${chap}» desde su inicio hasta donde va el oyente (${mins} min).\n`
-      : i >= 0 ? `El audio adjunto son los últimos ${mins} minutos que ha escuchado: el final del capítulo anterior y el comienzo de «${chap}».\n`
-      : `El audio adjunto son los últimos ${mins} minutos que ha escuchado.\n`) +
-    (ctx ? `Contexto de capítulos anteriores: ${ctx}\n` : '') +
-    `Su pregunta: «${question}»\n` +
-    `Si la pregunta habla de «esto» o «lo último», se refiere al final del audio. ` +
-    `Responde en español, claro y directo, en un máximo de unas 150 palabras y sin formato markdown. ` +
-    `Básate en el audio; si hace falta, completa con conocimiento general del tema y dilo. Si la respuesta no está en el audio, indícalo.`;
-  onStatus(`Gemini está escuchando ${mins} min del capítulo y pensando la respuesta…`);
-  const data = await askGemini(getKey(), media, prompt, onStatus, ANSWER_SCHEMA, REQUEST_TIMEOUT + mins * 1500);
+  const content = [
+    // el texto va primero y se cachea: varias preguntas seguidas en el mismo punto salen más baratas
+    {type: 'text', text: `<fragmento>\n${excerpt(tx, textOffsetAt(cur, tx, t0), textOffsetAt(cur, tx, t1), 600, mins)}\n</fragmento>`, cache_control: {type: 'ephemeral'}},
+    {type: 'text', text: `Libro: «${cur.title}»${cur.artist ? ` (${cur.artist})` : ''}. ` +
+      (whole ? `El fragmento es el capítulo «${chap}» desde su inicio (${mins} min de escucha).` : `El fragmento son los últimos ${mins} minutos de escucha.`) + '\n' +
+      (ctx ? `Contexto de capítulos anteriores: ${ctx}\n` : '') + `Pregunta: «${question}»`}];
+  onStatus(`Claude está leyendo ${mins} min del capítulo y pensando la respuesta…`);
+  const data = await askClaude(ASK_SYSTEM, content, ANSWER_SCHEMA);
   const note = {type: 'qa', pos: t1, chapter: chap, date: Date.now(), q: question, a: data.respuesta, min: mins, whole};
   await addNote(note);
   return note;
 }
 function openAsk() {
   if (!cur) return;
-  if (!getKey()) return sheet('Preguntar al libro', b => keyForm(b, openAsk));
+  if (!getKey()) return sheet('Clave de Anthropic', b => keyForm(b, openAsk));
+  if (!cur.hasText) return needTextSheet(openAsk);
   sheet('Preguntar al libro', body => {
     const h = document.createElement('div'); h.className = 'hint';
-    h.textContent = (chapters() ? 'Gemini escucha el capítulo actual desde su inicio hasta donde vas' : `Gemini escucha los últimos ${NO_CHAPTER_MINUTES} minutos`) +
+    h.textContent = (chapters() ? 'Claude lee el capítulo actual desde su inicio hasta donde vas' : `Claude lee lo equivalente a los últimos ${NO_CHAPTER_MINUTES} minutos`) +
       ' y te responde. La respuesta se guarda en tus apuntes.';
     const {field, input} = textField('Escribe o dicta tu pregunta…');
     const sug = document.createElement('div'); sug.className = 'chips';
@@ -1390,11 +1409,11 @@ function openAsk() {
     const go = document.createElement('button'); go.className = 'primary'; go.textContent = 'Preguntar';
     go.onclick = () => {
       const q = input.value.trim(); if (!q) return toast('Escribe o dicta una pregunta');
-      runGemini(body, st => askBook(q, st), n => {
+      runAI(body, st => askBook(q, st), n => {
         body.append(noteCard(n));
         const again = document.createElement('button'); again.className = 'primary'; again.style.background = 'var(--surface2)'; again.style.color = 'var(--text)';
         again.textContent = 'Hacer otra pregunta'; again.onclick = openAsk;
-        body.append(again, continueBtn());
+        body.append(again, continueBtn(), alignRow());
       }, openAsk);
     };
     body.append(h, field, sug, go);
@@ -1409,7 +1428,7 @@ $('#moreBtn').onclick = () => sheet('Más opciones', body => body.append(
   row('Aviso para escuchar', avisosSheet),
   row('Guardar copia de seguridad', exportBackup),
   row('Recuperar copia de seguridad', () => $('#restoreFile').click()),
-  row('Clave de Gemini', () => sheet('Clave de Gemini', b => keyForm(b, closeSheet)))));
+  row('Clave de Anthropic (IA)', () => sheet('Clave de Anthropic', b => keyForm(b, closeSheet)))));
 
 /* ---------- objetivo de hoy (tarjeta de la biblioteca) ---------- */
 function renderToday() {
@@ -1753,6 +1772,7 @@ window.addEventListener('hashchange', checkHash);
   updatePlayIcons();
   $('#ver').textContent = `Versión ${APP_VERSION}`;
   try { navigator.storage?.persist?.(); } catch {}
+  try { for (const k of ['geminiKey', 'geminiModels']) localStorage.removeItem(k); } catch {}
   await loadLibrary();
   let last; try { last = localStorage.getItem('last'); } catch {}
   if (last && books.some(b => b.id === last)) openBook(last, false);

@@ -1,4 +1,4 @@
-const CACHE = 'audiolibros-v12';
+const CACHE = 'audiolibros-v13';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './badge-96.png'];
 // Mismo servidor de avisos que la app de dieta: cada app tiene su propia suscripción push.
 const PUSH_API = 'https://dieta-avisos.dieta-avisos.workers.dev';
@@ -8,7 +8,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
-// Solo los archivos de la propia app (nunca las llamadas a Gemini). Siempre se pregunta
+// Solo los archivos de la propia app (nunca las llamadas a Anthropic). Siempre se pregunta
 // al servidor si hay versión nueva ('no-cache'); sin conexión se usa la copia guardada.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
